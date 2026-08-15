@@ -1,0 +1,18 @@
+# Blender source checkout -- cloned by the scripts, not vendored here.
+# The patch series in patches/ is the thing worth versioning.
+/blender/
+/blender-*/
+
+# Build trees and harvested dependency stacks (tens of GB).
+/build-*/
+/lib-x64-deps/
+/lib-macos_x64/
+
+# Build logs; keep the directory, not its contents.
+/logs/*
+!/logs/.gitkeep
+
+# Release artifacts.
+*.dmg
+
+.DS_Store
