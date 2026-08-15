@@ -71,24 +71,46 @@ design:
   bundle runs.
 * **The dependency stack does not.** Each dependency detects the CPU itself,
   and they disagree with each other. `aom` compiled ARM NEON intrinsics into
-  an x86_64 target (`unknown type name 'uint16x8_t'`); `x265` failed to
-  configure; `x264` needs an autotools `--host` that Blender never passes,
-  because upstream never cross-compiles. Every one of those is a patch to
-  carry forever.
+  an x86_64 target (`unknown type name 'uint16x8_t'`); `spirv-tools` could not
+  execute the x86_64 Python it had just built; `x264` needs an autotools
+  `--host` that Blender never passes, because upstream never cross-compiles.
+  Every one of those is a patch to write and carry forever, and the list was
+  still growing when we stopped.
 
 So: build the dependency stack **natively on Intel**, once, and cache it.
 Then Blender can be built against it from any machine. That keeps the patch
 series near-empty, which is the whole point — see the CI workflow.
 
-If you do want to cross-compile the dependencies anyway,
+If you want to cross-compile the dependencies anyway,
 `CMAKE_OSX_ARCHITECTURES=x86_64` makes the compiler emit x86_64 and Rosetta 2
-runs the x86_64 test binaries that configure scripts build. Two rules:
+runs many of the x86_64 test binaries that configure scripts build. Known
+blockers, all still open:
 
-* Do **not** wrap `cmake` in `arch -x86_64`. Homebrew's cmake is a
+* **Do not wrap `cmake` in `arch -x86_64`.** Homebrew's cmake is a
   single-architecture arm64 binary and fails with `Bad CPU type in
   executable`. Architecture selection is CMake's job, not the process's.
-* Expect to keep fixing per-dependency CPU detection. Patch `0002` handles the
-  CMake-based ones; the autotools-based ones are still open.
+* **`aom` compiles ARM NEON sources into an x86_64 target.** It derives its
+  target CPU from `CMAKE_SYSTEM_PROCESSOR`, and passing
+  `-DCMAKE_SYSTEM_PROCESSOR=x86_64` does **not** work: in a native (non
+  cross-compiling) configure, `project()` overwrites that variable with the
+  host value. Verified directly:
+
+  ```
+  -- BEFORE project(): [x86_64]
+  -- AFTER  project(): [arm64]
+  ```
+
+  A real fix needs the per-dependency knob (`-DAOM_TARGET_CPU=x86_64`) or
+  `CMAKE_SYSTEM_NAME` set to force genuine cross-compile mode, which brings its
+  own problems.
+* **`spirv-tools` cannot run the freshly built x86_64 Python 3.13**
+  (`Cannot run the interpreter .../python/bin/python3.13`) when invoked from an
+  arm64 CMake.
+* **`x264`** needs an autotools `--host`, which Blender never passes because
+  upstream never cross-compiles.
+
+Each is a patch to write and then carry forever. That is the argument for
+building the dependencies natively.
 
 ## Building in CI
 
