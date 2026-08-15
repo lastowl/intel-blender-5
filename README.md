@@ -228,11 +228,19 @@ working build.
 * The patch series applies cleanly to both `v5.2.0` and mainline (5.3 alpha),
   which is the property that makes it re-appliable each release.
 
+**CI history**
+
+| Run | Outcome |
+| --- | --- |
+| 1 | `alembic` failed — `cmake_policy(SET CMP0042 OLD)` deleted in CMake 4. Fixed by pinning CMake 3.31.12. |
+| 2 | `alembic` passed; `spirv-tools` failed on a build-graph race. Fixed by patch `0002`. |
+| 3 | in progress |
+
+Native Intel confirmed its worth in run 2: `aom` built AVX2 intrinsics
+correctly, the exact thing that fails when cross-compiling.
+
 **Not yet done**
 
-* A complete 5.2 build against a self-built dependency stack. The local
-  cross-compiled dependency build reaches ~520 targets before `aom` and `x264`
-  fail on architecture detection; the CI workflow sidesteps this by building
-  natively on Intel.
-* Nothing has been run in CI yet — the workflow is written but untested.
+* A complete 5.2 build against a self-built dependency stack — no CI run has
+  reached the Blender job yet, so that half of the workflow is still untested.
 * GPU acceleration. Not started; the build has to land first.

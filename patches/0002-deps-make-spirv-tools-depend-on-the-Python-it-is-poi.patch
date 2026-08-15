@@ -1,0 +1,45 @@
+From dd3b53bfd8ba25a086a67eda4443e3b61e9c5446 Mon Sep 17 00:00:00 2001
+From: Tom Hodgson <tom@justsanity.com>
+Date: Sat, 15 Aug 2026 21:55:29 +0100
+Subject: [PATCH 2/2] deps: make spirv-tools depend on the Python it is pointed
+ at
+
+SPIRV_TOOLS_EXTRA_ARGS sets Python3_EXECUTABLE to ${PYTHON_BINARY},
+the interpreter built by external_python, but external_spirv_tools only
+declared a dependency on external_spirv_headers. A parallel build can
+therefore configure spirv-tools before Python has finished installing:
+
+  Could NOT find Python3 (missing: Interpreter)
+    Cannot run the interpreter ".../python/bin/python3.13"
+
+Reproduced on both an Apple Silicon cross-compile and a native Intel
+runner, so it is a build-graph race rather than anything architecture
+specific. external_shaderc already declares external_python for exactly
+the same reason; this brings spirv-tools in line.
+---
+ build_files/build_environment/cmake/vulkan.cmake | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/build_files/build_environment/cmake/vulkan.cmake b/build_files/build_environment/cmake/vulkan.cmake
+index 90ae0d19087..d676f577e5e 100644
+--- a/build_files/build_environment/cmake/vulkan.cmake
++++ b/build_files/build_environment/cmake/vulkan.cmake
+@@ -82,6 +82,15 @@ ExternalProject_Add(external_spirv_tools
+ add_dependencies(
+   external_spirv_tools
+   external_spirv_headers
++  # SPIRV_TOOLS_EXTRA_ARGS points Python3_EXECUTABLE at the Python we build
++  # ourselves, so that build has to finish first. Without this edge a parallel
++  # build can configure spirv-tools while Python is still being installed:
++  #
++  #   Could NOT find Python3 (missing: Interpreter)
++  #     Cannot run the interpreter ".../python/bin/python3.13"
++  #
++  # external_shaderc already declares this for the same reason.
++  external_python
+ )
+ 
+ if(UNIX AND NOT APPLE)
+-- 
+2.50.1 (Apple Git-155)
+
