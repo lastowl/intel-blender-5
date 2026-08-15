@@ -164,10 +164,18 @@ and the revert has to land on two years of subsequent Cycles work — including
 the bindless-resource refactor (`CYCLES_USE_TIER2D_BINDLESS`), which assumes
 argument-buffer capabilities an older AMD GPU may not have.
 
+A trial `git revert c8340cf7541` onto `v5.2.0` gives a concrete size estimate:
+**12 files conflict, 22 conflict blocks**, concentrated in
+`device/metal/device_impl.mm` (5) and spread across `device.cpp`, `queue.mm`,
+`util.mm`, `context_begin.h`, `kernel/types.h` and `scene/light.cpp`. Tractable,
+but every resolution is a judgement call that can only be validated on real AMD
+hardware.
+
 Order of work: confirm the viewport is already accelerated on real hardware
 first, since that is most of the day-to-day benefit and may cost nothing. Then
 attempt the Cycles revert as a separate, clearly-labelled patch that can be
-dropped if it proves unstable.
+dropped if it proves unstable — it should never be a prerequisite for a
+working build.
 
 ## Status
 
