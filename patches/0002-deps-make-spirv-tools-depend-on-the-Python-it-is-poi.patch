@@ -1,7 +1,7 @@
 From dd3b53bfd8ba25a086a67eda4443e3b61e9c5446 Mon Sep 17 00:00:00 2001
 From: Tom Hodgson <tom@justsanity.com>
 Date: Sat, 15 Aug 2026 21:55:29 +0100
-Subject: [PATCH 2/2] deps: make spirv-tools depend on the Python it is pointed
+Subject: [PATCH 2/3] deps: make spirv-tools depend on the Python it is pointed
  at
 
 SPIRV_TOOLS_EXTRA_ARGS sets Python3_EXECUTABLE to ${PYTHON_BINARY},

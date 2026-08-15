@@ -234,7 +234,9 @@ working build.
 | --- | --- |
 | 1 | `alembic` failed — `cmake_policy(SET CMP0042 OLD)` deleted in CMake 4. Fixed by pinning CMake 3.31.12. |
 | 2 | `alembic` passed; `spirv-tools` failed on a build-graph race. Fixed by patch `0002`. |
-| 3 | in progress |
+| 3 | Failed on `spirv-tools` again — the deps job was never applying the patch series. Workflow fixed. |
+| 4 | Reached 54%; `spirv-tools` no longer raced. `x265` failed: `nasm: error: unrecognised option '-m'`. Fixed by patch `0003`. |
+| 5 | in progress |
 
 Native Intel confirmed its worth in run 2: `aom` built AVX2 intrinsics
 correctly, the exact thing that fails when cross-compiling.
