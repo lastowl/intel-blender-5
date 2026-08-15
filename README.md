@@ -71,11 +71,10 @@ design:
   bundle runs.
 * **The dependency stack does not.** Each dependency detects the CPU itself,
   and they disagree with each other. `aom` compiled ARM NEON intrinsics into
-  an x86_64 target (`unknown type name 'uint16x8_t'`); `spirv-tools` could not
-  execute the x86_64 Python it had just built; `x264` needs an autotools
-  `--host` that Blender never passes, because upstream never cross-compiles.
-  Every one of those is a patch to write and carry forever, and the list was
-  still growing when we stopped.
+  an x86_64 target (`unknown type name 'uint16x8_t'`); `x264` needs an
+  autotools `--host` that Blender never passes, because upstream never
+  cross-compiles; `x265` fails to configure. Every one is a patch to write and
+  carry forever, and the list was still growing when we stopped.
 
 So: build the dependency stack **natively on Intel**, once, and cache it.
 Then Blender can be built against it from any machine. That keeps the patch
@@ -103,11 +102,13 @@ blockers, all still open:
   A real fix needs the per-dependency knob (`-DAOM_TARGET_CPU=x86_64`) or
   `CMAKE_SYSTEM_NAME` set to force genuine cross-compile mode, which brings its
   own problems.
-* **`spirv-tools` cannot run the freshly built x86_64 Python 3.13**
-  (`Cannot run the interpreter .../python/bin/python3.13`) when invoked from an
-  arm64 CMake.
 * **`x264`** needs an autotools `--host`, which Blender never passes because
   upstream never cross-compiles.
+* **`x265`** fails to configure.
+
+(`spirv-tools` also failed here at first and looked architecture-related. It
+was not — it reproduced identically on native Intel and turned out to be a
+build-graph race, fixed by patch `0002`.)
 
 Each is a patch to write and then carry forever. That is the argument for
 building the dependencies natively.
