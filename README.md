@@ -121,6 +121,54 @@ git fetch --tags origin
 git rebase v5.3.0 intel-x64-5.2
 ```
 
+## GPU acceleration
+
+"GPU support on Intel Macs" is really two independent subsystems, and they are
+in very different states in 5.2. This matters, because one of them may need no
+work at all.
+
+**Viewport / EEVEE (the Metal GPU backend, `source/blender/gpu/metal`) still
+supports AMD and Intel GPUs.** Nothing was removed here. `mtl_backend.mm`
+detects `GPU_DEVICE_ATI` and `GPU_DEVICE_INTEL`, selects the immediate-mode
+architecture path (`GPU_ARCHITECTURE_IMR`) for non-Apple GPUs, carries
+AMD-specific workarounds, and its support check explicitly accepts both
+vendors:
+
+```objc
+/* Known good configs. */
+if (strstr(vendor, "AMD") || strstr(vendor, "Apple") || ...) { ... }
+/* Explicit support for Intel-based platforms. */
+if ((strstr(vendor, "Intel") || strstr(vendor, "INTEL"))) { ... }
+```
+
+`WITH_METAL_BACKEND` is also already defined in our x86_64 build. So the
+viewport is expected to be GPU-accelerated out of the box — this needs
+confirming on real hardware, not asserting.
+
+**Cycles GPU rendering does not.** AMD and Intel were removed from the Cycles
+Metal backend in 4.3 by `c8340cf7541` ("Cycles: Remove AMD and Intel GPU
+support from Metal backend", 15 files, +118/−318). The gate now lives in
+`MetalInfo::get_usable_devices()`:
+
+```objc
+if (!(strstr(device_name_char, "Intel") || strstr(device_name_char, "AMD")) &&
+    strstr(device_name_char, "Apple"))
+```
+
+An AMD Mac therefore reports "No usable Metal devices found" and falls back to
+CPU rendering.
+
+Re-adding it is not a one-line revert. The upstream reasoning was Metal
+driver/compiler bugs on those GPUs that forced parts of Cycles to be disabled,
+and the revert has to land on two years of subsequent Cycles work — including
+the bindless-resource refactor (`CYCLES_USE_TIER2D_BINDLESS`), which assumes
+argument-buffer capabilities an older AMD GPU may not have.
+
+Order of work: confirm the viewport is already accelerated on real hardware
+first, since that is most of the day-to-day benefit and may cost nothing. Then
+attempt the Cycles revert as a separate, clearly-labelled patch that can be
+dropped if it proves unstable.
+
 ## Status
 
 **Verified so far**
