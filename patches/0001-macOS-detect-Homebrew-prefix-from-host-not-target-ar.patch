@@ -1,0 +1,118 @@
+From e874c3dabb3e9147cc8cfe2223349830228b1735 Mon Sep 17 00:00:00 2001
+From: Tom Hodgson <tom@justsanity.com>
+Date: Sat, 15 Aug 2026 20:19:59 +0100
+Subject: [PATCH 1/2] macOS: detect Homebrew prefix from host, not target
+ architecture
+
+When building the x86_64 dependency stack on an Apple Silicon host (under
+Rosetta), CMAKE_HOST_SYSTEM_PROCESSOR and CMAKE_OSX_ARCHITECTURES both
+report x86_64, so the build guessed the Intel Homebrew prefix
+(/usr/local) while Homebrew actually lives in /opt/homebrew. bison was
+then reported missing, and OSL/ISPC would have been handed bison and
+flex paths that do not exist.
+
+Detect the prefix that exists on the host once in check_software.cmake,
+export it as HOMEBREW_PREFIX, and use it in osl.cmake and ispc.cmake.
+ISPC's ARM_ENABLED still follows the target architecture, spelled out
+explicitly because BLENDER_PLATFORM_ARM is left undefined (not OFF) for
+non-ARM targets.
+---
+ .../cmake/check_software.cmake                | 23 +++++++++++++++----
+ .../build_environment/cmake/ispc.cmake        | 22 ++++++++++--------
+ build_files/build_environment/cmake/osl.cmake |  9 ++++----
+ 3 files changed, 34 insertions(+), 20 deletions(-)
+
+diff --git a/build_files/build_environment/cmake/check_software.cmake b/build_files/build_environment/cmake/check_software.cmake
+index fbccf106cc8..707e87e2783 100644
+--- a/build_files/build_environment/cmake/check_software.cmake
++++ b/build_files/build_environment/cmake/check_software.cmake
+@@ -40,12 +40,25 @@ if(UNIX)
+ 
+   if(APPLE)
+     # Homebrew has different default locations for ARM and Intel macOS.
+-    if("${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "arm64")
+-      set(HOMEBREW_LOCATION "/opt/homebrew")
+-    else()
+-      set(HOMEBREW_LOCATION "/usr/local")
++    # Homebrew has different default locations for ARM and Intel macOS.
++    #
++    # Detect the prefix that actually exists rather than deriving it from the
++    # architecture. When building x86_64 on an Apple Silicon host (under
++    # Rosetta) the host processor reports x86_64, but Homebrew still lives in
++    # the arm64 prefix, so an architecture-based guess picks the wrong path.
++    #
++    # HOMEBREW_PREFIX is reused by the dependencies that need a modern bison
++    # and flex (see osl.cmake and ispc.cmake).
++    if(NOT DEFINED HOMEBREW_PREFIX)
++      foreach(_hb_candidate "/opt/homebrew" "/usr/local")
++        if(EXISTS "${_hb_candidate}/opt/bison/bin/bison")
++          set(HOMEBREW_PREFIX "${_hb_candidate}" CACHE PATH "Homebrew install prefix")
++          break()
++        endif()
++      endforeach()
++      unset(_hb_candidate)
+     endif()
+-    if(NOT EXISTS "${HOMEBREW_LOCATION}/opt/bison/bin/bison")
++    if(NOT DEFINED HOMEBREW_PREFIX)
+       string(APPEND _software_missing " bison")
+     endif()
+   endif()
+diff --git a/build_files/build_environment/cmake/ispc.cmake b/build_files/build_environment/cmake/ispc.cmake
+index c93b22ae4e8..3d6f20e8549 100644
+--- a/build_files/build_environment/cmake/ispc.cmake
++++ b/build_files/build_environment/cmake/ispc.cmake
+@@ -18,19 +18,21 @@ if(WIN32)
+ elseif(APPLE)
+   # Use bison and flex installed via Homebrew.
+   # The ones that come with Xcode toolset are too old.
++  # Take bison/flex from the Homebrew prefix detected on the host
++  # (see check_software.cmake); ARM_ENABLED still follows the target arch.
++  # BLENDER_PLATFORM_ARM is left undefined rather than set to OFF for
++  # non-ARM targets, so spell the value out to avoid passing an empty flag.
+   if(BLENDER_PLATFORM_ARM)
+-    set(ISPC_EXTRA_ARGS_APPLE
+-      -DBISON_EXECUTABLE=/opt/homebrew/opt/bison/bin/bison
+-      -DFLEX_EXECUTABLE=/opt/homebrew/opt/flex/bin/flex
+-      -DARM_ENABLED=On
+-    )
++    set(_ispc_arm_enabled On)
+   else()
+-    set(ISPC_EXTRA_ARGS_APPLE
+-      -DBISON_EXECUTABLE=/usr/local/opt/bison/bin/bison
+-      -DFLEX_EXECUTABLE=/usr/local/opt/flex/bin/flex
+-      -DARM_ENABLED=Off
+-    )
++    set(_ispc_arm_enabled Off)
+   endif()
++  set(ISPC_EXTRA_ARGS_APPLE
++    -DBISON_EXECUTABLE=${HOMEBREW_PREFIX}/opt/bison/bin/bison
++    -DFLEX_EXECUTABLE=${HOMEBREW_PREFIX}/opt/flex/bin/flex
++    -DARM_ENABLED=${_ispc_arm_enabled}
++  )
++  unset(_ispc_arm_enabled)
+ elseif(UNIX)
+   set(ISPC_EXTRA_ARGS_UNIX
+     -DCMAKE_C_COMPILER=gcc
+diff --git a/build_files/build_environment/cmake/osl.cmake b/build_files/build_environment/cmake/osl.cmake
+index d5e4ef8ed4f..a818c7a34a6 100644
+--- a/build_files/build_environment/cmake/osl.cmake
++++ b/build_files/build_environment/cmake/osl.cmake
+@@ -17,11 +17,10 @@ else()
+ 
+   if(APPLE)
+     # Explicitly specify Homebrew path, so we don't use the old system one.
+-    if(BLENDER_PLATFORM_ARM)
+-      set(OSL_FLEX_BISON -DBISON_EXECUTABLE=/opt/homebrew/opt/bison/bin/bison)
+-    else()
+-      set(OSL_FLEX_BISON -DBISON_EXECUTABLE=/usr/local/opt/bison/bin/bison)
+-    endif()
++    # HOMEBREW_PREFIX is detected in check_software.cmake from the prefix that
++    # exists on the host, which is not necessarily the target architecture's
++    # default (e.g. building x86_64 on an Apple Silicon host).
++    set(OSL_FLEX_BISON -DBISON_EXECUTABLE=${HOMEBREW_PREFIX}/opt/bison/bin/bison)
+   else()
+     set(OSL_FLEX_BISON "")
+   endif()
+-- 
+2.50.1 (Apple Git-155)
+

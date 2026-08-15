@@ -45,16 +45,51 @@ but it is the officially supported mechanism, produces correct versions of
 everything, and only needs redoing when Blender bumps dependency versions,
 not on every mainline update. This is the durable path.
 
-## Building on Apple Silicon
+## Build Blender anywhere, build the dependencies on Intel
 
-Both paths work from an arm64 host. `CMAKE_OSX_ARCHITECTURES=x86_64` makes the
-compiler emit x86_64; Rosetta 2 transparently runs the x86_64 test binaries
-that dependency configure scripts compile and execute, so the dependency build
-behaves much like a native one.
+These two halves behave very differently, and the split drives the whole
+design:
 
-Do **not** wrap `cmake` in `arch -x86_64`. Homebrew's cmake is a
-single-architecture arm64 binary and fails with `Bad CPU type in executable`.
-Architecture selection is CMake's job, not the process's.
+* **Blender itself cross-compiles from arm64 without complaint.** Verified end
+  to end: 10k+ objects, correct `-arch x86_64`, links, and the resulting
+  bundle runs.
+* **The dependency stack does not.** Each dependency detects the CPU itself,
+  and they disagree with each other. `aom` compiled ARM NEON intrinsics into
+  an x86_64 target (`unknown type name 'uint16x8_t'`); `x265` failed to
+  configure; `x264` needs an autotools `--host` that Blender never passes,
+  because upstream never cross-compiles. Every one of those is a patch to
+  carry forever.
+
+So: build the dependency stack **natively on Intel**, once, and cache it.
+Then Blender can be built against it from any machine. That keeps the patch
+series near-empty, which is the whole point — see the CI workflow.
+
+If you do want to cross-compile the dependencies anyway,
+`CMAKE_OSX_ARCHITECTURES=x86_64` makes the compiler emit x86_64 and Rosetta 2
+runs the x86_64 test binaries that configure scripts build. Two rules:
+
+* Do **not** wrap `cmake` in `arch -x86_64`. Homebrew's cmake is a
+  single-architecture arm64 binary and fails with `Bad CPU type in
+  executable`. Architecture selection is CMake's job, not the process's.
+* Expect to keep fixing per-dependency CPU detection. Patch `0002` handles the
+  CMake-based ones; the autotools-based ones are still open.
+
+## Building in CI
+
+`.github/workflows/build-intel-mac.yml` builds natively on GitHub's Intel
+runner, caching the dependency stack so only the first run pays for it.
+
+The cache is keyed on a hash of Blender's `versions.cmake`, not on the Blender
+tag, so releases that share dependency versions share one cached stack — a new
+mainline release usually costs a Blender build only, not a dependency build.
+
+**Runner lifetime matters here.** `macos-13` was retired in December 2025. The
+replacement label is `macos-15-intel`, and GitHub has said it is the last
+x86_64 macOS image, available until **August 2027**. After that this needs a
+self-hosted Intel runner, or the cross-compile path above.
+
+The dependency build is also close to GitHub's 6-hour job ceiling on a cold
+cache, which is why dependencies and Blender are separate jobs.
 
 ## Layout
 
@@ -88,4 +123,22 @@ git rebase v5.3.0 intel-x64-5.2
 
 ## Status
 
-Work in progress. See `patches/` for what has been needed so far.
+**Verified so far**
+
+* A 5.0.1 x86_64 bundle builds, links, and runs (`Blender 5.0.1`, minimum
+  macOS 11.2), cross-compiled from an Apple Silicon host against the frozen
+  4.5-era libraries. `WITH_CODEC_FFMPEG` and `WITH_CODEC_SNDFILE` are off:
+  that library set predates 5.0's `libavfilter` requirement, and `libopus.a`
+  ships only inside the ffmpeg directory, so dropping ffmpeg breaks sndfile's
+  link. A validation build, not a shippable one.
+* The patch series applies cleanly to both `v5.2.0` and mainline (5.3 alpha),
+  which is the property that makes it re-appliable each release.
+
+**Not yet done**
+
+* A complete 5.2 build against a self-built dependency stack. The local
+  cross-compiled dependency build reaches ~520 targets before `aom` and `x264`
+  fail on architecture detection; the CI workflow sidesteps this by building
+  natively on Intel.
+* Nothing has been run in CI yet — the workflow is written but untested.
+* GPU acceleration. Not started; the build has to land first.

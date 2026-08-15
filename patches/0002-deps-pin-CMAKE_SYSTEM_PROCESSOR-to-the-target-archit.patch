@@ -1,0 +1,39 @@
+From df529730a600e1dc7247312cccebe54542fc2e69 Mon Sep 17 00:00:00 2001
+From: Tom Hodgson <tom@justsanity.com>
+Date: Sat, 15 Aug 2026 20:40:04 +0100
+Subject: [PATCH 2/2] deps: pin CMAKE_SYSTEM_PROCESSOR to the target
+ architecture on macOS
+
+Dependencies that pick SIMD sources themselves (aom, x265, and others)
+branch on CMAKE_SYSTEM_PROCESSOR rather than CMAKE_OSX_ARCHITECTURES.
+CMake fills that variable in from the host, so building x86_64 on an
+Apple Silicon host fed ARM NEON sources to an x86_64 compile:
+
+  aom_convolve_copy_neon.c:118:5: error: unknown type name 'uint16x8_t'
+
+Pin it alongside the other per-platform flags so every CMake-based
+dependency sees the architecture actually being built.
+---
+ build_files/build_environment/cmake/options.cmake | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/build_files/build_environment/cmake/options.cmake b/build_files/build_environment/cmake/options.cmake
+index f4a05b26b5b..473ad26d8a6 100644
+--- a/build_files/build_environment/cmake/options.cmake
++++ b/build_files/build_environment/cmake/options.cmake
+@@ -233,6 +233,12 @@ else()
+       -DCMAKE_OSX_ARCHITECTURES:STRING=${CMAKE_OSX_ARCHITECTURES}
+       -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=${CMAKE_OSX_DEPLOYMENT_TARGET}
+       -DCMAKE_OSX_SYSROOT:PATH=${CMAKE_OSX_SYSROOT}
++      # Dependencies that select SIMD sources themselves (aom, x265, ...)
++      # branch on CMAKE_SYSTEM_PROCESSOR rather than CMAKE_OSX_ARCHITECTURES.
++      # CMake fills that in from the host, so when building x86_64 on an
++      # Apple Silicon host they would compile ARM NEON sources into an
++      # x86_64 target and fail. Pin it to the architecture being built.
++      -DCMAKE_SYSTEM_PROCESSOR:STRING=${CMAKE_OSX_ARCHITECTURES}
+     )
+   else()
+     set(SHAREDLIBEXT ".so")
+-- 
+2.50.1 (Apple Git-155)
+

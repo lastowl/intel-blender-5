@@ -1,0 +1,142 @@
+name: Build Blender (Intel macOS)
+
+# Builds x86_64 Blender natively on an Intel runner.
+#
+# Why native rather than cross-compiling from arm64: Blender itself
+# cross-compiles cleanly, but the dependency stack does not -- individual
+# dependencies detect the CPU themselves and disagree (aom compiles ARM NEON
+# sources into an x86_64 target, x264's configure needs --host, and so on).
+# Building natively removes that entire class of failure, which keeps the
+# patch series small enough to re-apply on each mainline Blender update.
+#
+# NOTE ON RUNNER LIFETIME: macos-15-intel is the last x86_64 macOS image
+# GitHub will offer, available until August 2027. macos-13 was retired in
+# December 2025. After the sunset this workflow needs a self-hosted Intel
+# runner, or the cross-compile path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      blender_tag:
+        description: "Blender tag or branch to build"
+        required: true
+        default: "v5.2.0"
+      rebuild_deps:
+        description: "Ignore the dependency cache and rebuild from source"
+        type: boolean
+        default: false
+
+env:
+  BLENDER_TAG: ${{ inputs.blender_tag }}
+  # Old dependencies still declare cmake_minimum_required(VERSION <3.5),
+  # which CMake 4.x rejects. Harmless on runners that still ship CMake 3.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  deps:
+    name: Dependency stack
+    runs-on: macos-15-intel
+    # The dependency build is the long pole; GitHub's ceiling is 6 hours.
+    timeout-minutes: 350
+    outputs:
+      cache-key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone Blender
+        run: |
+          git clone --depth=1 --branch "$BLENDER_TAG" \
+            https://projects.blender.org/blender/blender.git blender
+
+      - name: Compute dependency cache key
+        id: key
+        # Dependency versions change rarely, so key on the file that defines
+        # them rather than on the Blender tag. Two tags with identical
+        # dependency versions then share one cached stack.
+        run: |
+          hash=$(shasum -a 256 blender/build_files/build_environment/cmake/versions.cmake | cut -c1-16)
+          echo "key=deps-x64-$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore dependency cache
+        id: cache
+        if: ${{ !inputs.rebuild_deps }}
+        uses: actions/cache/restore@v4
+        with:
+          path: lib-x64-deps
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install autoconf automake bison dos2unix flex libtool \
+            meson ninja pkg-config yasm nasm
+
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          BLENDER_SRC: ${{ github.workspace }}/blender
+          DEPS_INSTALL_DIR: ${{ github.workspace }}/lib-x64-deps
+          DEPS_BUILD_DIR: ${{ runner.temp }}/build-deps-x64
+          LOG: ${{ github.workspace }}/logs/deps-x64.log
+        run: ./scripts/build-deps-x64.sh
+
+      - name: Save dependency cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: lib-x64-deps
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Upload dependency build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-log
+          path: logs/deps-x64.log
+          if-no-files-found: ignore
+
+  blender:
+    name: Blender
+    needs: deps
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone Blender
+        run: |
+          git clone --depth=1 --branch "$BLENDER_TAG" \
+            https://projects.blender.org/blender/blender.git blender
+
+      - name: Apply Intel patch series
+        run: ./scripts/apply-patches.sh
+
+      - name: Restore dependency stack
+        uses: actions/cache/restore@v4
+        with:
+          path: lib-x64-deps
+          key: ${{ needs.deps.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Install build tools
+        run: brew install ninja
+
+      - name: Build Blender
+        env:
+          BLENDER_SRC: ${{ github.workspace }}/blender
+          BUILD_DIR: ${{ github.workspace }}/build-x64
+          LIBDIR: ${{ github.workspace }}/lib-x64-deps
+        run: ./scripts/build-blender-x64.sh
+
+      - name: Package .dmg
+        env:
+          APP: ${{ github.workspace }}/build-x64/bin/Blender.app
+          OUT_DIR: ${{ github.workspace }}
+        run: ./scripts/package-dmg.sh
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-intel-macos
+          path: "*.dmg"
+          if-no-files-found: error

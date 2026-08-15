@@ -34,6 +34,13 @@ export PATH="$HOMEBREW_PREFIX_DETECTED/opt/bison/bin:$HOMEBREW_PREFIX_DETECTED/o
 # Matches the value the `deps` make target uses, for reproducible timestamps.
 export SOURCE_DATE_EPOCH=1745584760
 
+# Several dependencies (brotli, jpeg, blosc, openal, ...) still declare
+# cmake_minimum_required(VERSION <3.5), which CMake 4.x refuses outright.
+# This is CMake's supported escape hatch, and as an environment variable it
+# reaches every ExternalProject sub-configure without patching each one.
+# Remove once the dependencies themselves raise their minimum.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
 mkdir -p "$(dirname "$LOG")" "$DEPS_BUILD_DIR"
 
 echo "=== Blender x86_64 dependency build ==="
