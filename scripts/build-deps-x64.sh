@@ -39,8 +39,34 @@ export SOURCE_DATE_EPOCH=1745584760
 # cmake_minimum_required(VERSION <3.5), which CMake 4.x refuses outright.
 # This is CMake's supported escape hatch, and as an environment variable it
 # reaches every ExternalProject sub-configure without patching each one.
-# Remove once the dependencies themselves raise their minimum.
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# ...but that only covers cmake_minimum_required. Dependencies that call
+# cmake_policy(SET <id> OLD) for a policy CMake 4 deleted cannot be rescued
+# that way -- alembic does exactly this with CMP0042. So the dependency build
+# needs a CMake 3.x. Fail now with instructions rather than 15 minutes in.
+cmake_major="$(cmake --version | head -1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+if [[ "$cmake_major" -ge 4 ]]; then
+  cat >&2 <<'EOF'
+error: the dependency build requires CMake 3.x, found CMake 4 or newer.
+
+  Blender's dependency tree predates CMake 4. alembic calls
+  cmake_policy(SET CMP0042 OLD), whose OLD behaviour CMake 4 removed
+  entirely, so it fails to configure no matter what compatibility flags
+  are set.
+
+  Install the last 3.x release and put it first on PATH, e.g.:
+
+    version=3.31.12
+    curl -fsSL -o /tmp/cmake.tar.gz \
+      "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-macos-universal.tar.gz"
+    mkdir -p /tmp/cmake && tar -xzf /tmp/cmake.tar.gz -C /tmp/cmake --strip-components=1
+    export PATH="/tmp/cmake/CMake.app/Contents/bin:$PATH"
+
+  Blender itself builds fine under CMake 4 -- only this script needs 3.x.
+EOF
+  exit 1
+fi
 
 mkdir -p "$(dirname "$LOG")" "$DEPS_BUILD_DIR"
 

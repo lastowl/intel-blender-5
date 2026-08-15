@@ -71,6 +71,30 @@ jobs:
           brew install autoconf automake bison dos2unix flex libtool \
             meson ninja pkg-config yasm nasm
 
+      - name: Pin CMake 3.x for the dependency build
+        if: steps.cache.outputs.cache-hit != 'true'
+        # Blender's dependency tree predates CMake 4, and several dependencies
+        # do things CMake 4 removed outright rather than merely deprecated:
+        #
+        #   alembic: cmake_policy(SET CMP0042 OLD)  -- OLD behaviour deleted
+        #   brotli, jpeg, blosc, openal: cmake_minimum_required(VERSION <3.5)
+        #
+        # CMAKE_POLICY_VERSION_MINIMUM only covers the second group, so the
+        # first still fails. Pinning the last 3.x release fixes the whole class
+        # without patching individual dependencies -- much less to carry across
+        # Blender updates. Blender itself builds fine under CMake 4, so this is
+        # scoped to the dependency job only.
+        run: |
+          version=3.31.12
+          curl -fsSL -o /tmp/cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-macos-universal.tar.gz"
+          mkdir -p /tmp/cmake && tar -xzf /tmp/cmake.tar.gz -C /tmp/cmake --strip-components=1
+          echo "/tmp/cmake/CMake.app/Contents/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm pinned CMake
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: cmake --version
+
       - name: Build dependencies
         if: steps.cache.outputs.cache-hit != 'true'
         env:

@@ -45,6 +45,22 @@ but it is the officially supported mechanism, produces correct versions of
 everything, and only needs redoing when Blender bumps dependency versions,
 not on every mainline update. This is the durable path.
 
+## The dependency build needs CMake 3.x
+
+Blender's dependency tree predates CMake 4, and two different things break
+under it:
+
+* `brotli`, `jpeg`, `blosc`, `openal` declare `cmake_minimum_required(VERSION
+  <3.5)`, which CMake 4 rejects. `CMAKE_POLICY_VERSION_MINIMUM=3.5` handles
+  these.
+* `alembic` calls `cmake_policy(SET CMP0042 OLD)`, and CMake 4 deleted that
+  policy's OLD behaviour outright. No compatibility flag rescues it.
+
+So the dependency build pins the last 3.x release (3.31.12). Blender itself
+builds fine under CMake 4 — only the dependency stack needs the pin, and
+`build-deps-x64.sh` checks and fails immediately with instructions rather than
+dying part-way through.
+
 ## Build Blender anywhere, build the dependencies on Intel
 
 These two halves behave very differently, and the split drives the whole
