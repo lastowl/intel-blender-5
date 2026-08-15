@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-ROOT="${ROOT:-/Users/murple/blender5}"
+ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BLENDER_SRC="${BLENDER_SRC:-$ROOT/blender}"
 BUILD_DIR="${BUILD_DIR:-$ROOT/build-x64}"
 LIBDIR="${LIBDIR:-$ROOT/lib-x64-deps}"

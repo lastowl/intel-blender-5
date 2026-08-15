@@ -20,10 +20,11 @@
 
 set -euo pipefail
 
-BLENDER_SRC="${BLENDER_SRC:-/Users/murple/blender5/blender}"
-DEPS_INSTALL_DIR="${DEPS_INSTALL_DIR:-/Users/murple/blender5/lib-x64-deps}"
-DEPS_BUILD_DIR="${DEPS_BUILD_DIR:-/Users/murple/blender5/build-deps-x64}"
-LOG="${LOG:-/Users/murple/blender5/logs/deps-x64.log}"
+ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BLENDER_SRC="${BLENDER_SRC:-$ROOT/blender}"
+DEPS_INSTALL_DIR="${DEPS_INSTALL_DIR:-$ROOT/lib-x64-deps}"
+DEPS_BUILD_DIR="${DEPS_BUILD_DIR:-$ROOT/build-deps-x64}"
+LOG="${LOG:-$ROOT/logs/deps-x64.log}"
 NPROCS="${NPROCS:-$(sysctl -n hw.ncpu)}"
 
 # Homebrew keg-only tools the dependency builds need ahead of the ancient
