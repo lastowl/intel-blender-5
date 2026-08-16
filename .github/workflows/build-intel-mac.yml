@@ -43,10 +43,15 @@ jobs:
     env:
       BLENDER_SRC: ${{ github.workspace }}/blender
       DEPS_INSTALL_DIR: ${{ github.workspace }}/lib-x64-deps
-      DEPS_BUILD_DIR: ${{ runner.temp }}/build-deps-x64
       LOG: ${{ github.workspace }}/logs/deps-x64.log
     steps:
       - uses: actions/checkout@v4
+
+      # The `runner` context is not available in a job-level `env:` block, so
+      # publish the build directory through the environment file instead. It
+      # lives outside the workspace to keep it out of the cached tree.
+      - name: Set dependency build directory
+        run: echo "DEPS_BUILD_DIR=$RUNNER_TEMP/build-deps-x64" >> "$GITHUB_ENV"
 
       - name: Clone Blender
         run: |
@@ -134,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: deps-step-logs
-          path: ${{ runner.temp }}/build-deps-x64/**/*.log
+          path: ${{ env.DEPS_BUILD_DIR }}/**/*.log
           if-no-files-found: ignore
           retention-days: 7
 
