@@ -40,6 +40,11 @@ jobs:
     timeout-minutes: 350
     outputs:
       cache-key: ${{ steps.key.outputs.key }}
+    env:
+      BLENDER_SRC: ${{ github.workspace }}/blender
+      DEPS_INSTALL_DIR: ${{ github.workspace }}/lib-x64-deps
+      DEPS_BUILD_DIR: ${{ runner.temp }}/build-deps-x64
+      LOG: ${{ github.workspace }}/logs/deps-x64.log
     steps:
       - uses: actions/checkout@v4
 
@@ -103,12 +108,35 @@ jobs:
 
       - name: Build dependencies
         if: steps.cache.outputs.cache-hit != 'true'
-        env:
-          BLENDER_SRC: ${{ github.workspace }}/blender
-          DEPS_INSTALL_DIR: ${{ github.workspace }}/lib-x64-deps
-          DEPS_BUILD_DIR: ${{ runner.temp }}/build-deps-x64
-          LOG: ${{ github.workspace }}/logs/deps-x64.log
         run: ./scripts/build-deps-x64.sh
+
+      # Several dependencies are declared with LOG_BUILD/LOG_CONFIGURE, so
+      # their real compiler output goes to a per-step .log file and the console
+      # only shows "Command failed: 1". Surface those logs, otherwise a failure
+      # costs another full run just to find out what actually went wrong.
+      - name: Show failing dependency logs
+        if: failure()
+        run: |
+          echo "Most recently modified ExternalProject step logs:"
+          find "$DEPS_BUILD_DIR" -name '*-build-*.log' -o -name '*-configure-*.log' \
+            2>/dev/null | while read -r f; do
+              printf '%s\t%s\n' "$(stat -f %m "$f")" "$f"
+            done | sort -rn | head -5 | cut -f2- | while read -r f; do
+              echo
+              echo "================================================================"
+              echo "== $f"
+              echo "================================================================"
+              tail -80 "$f"
+            done
+
+      - name: Upload dependency step logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-step-logs
+          path: ${{ runner.temp }}/build-deps-x64/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Save dependency cache
         if: steps.cache.outputs.cache-hit != 'true'
