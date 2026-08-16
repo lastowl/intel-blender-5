@@ -237,7 +237,8 @@ working build.
 | 2 | `alembic` passed; `spirv-tools` failed on a build-graph race. Fixed by patch `0002`. |
 | 3 | Failed on `spirv-tools` again — the deps job was never applying the patch series. Workflow fixed. |
 | 4 | Reached 54%; `spirv-tools` no longer raced. `x265` failed: `nasm: error: unrecognised option '-m'`. Fixed by patch `0003`. |
-| 5 | in progress |
+| 5 | `x265` fixed. Reached 56%; `flac` failed trying to regenerate autotools output with `aclocal-1.16`. Fixed by patch `0004`. |
+| 6 | in progress |
 
 Native Intel confirmed its worth in run 2: `aom` built AVX2 intrinsics
 correctly, the exact thing that fails when cross-compiling.

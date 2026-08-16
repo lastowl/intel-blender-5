@@ -1,0 +1,55 @@
+From d16f55f727f1de1fbe680043e27f23bd73cdcb9d Mon Sep 17 00:00:00 2001
+From: Tom Hodgson <tom@justsanity.com>
+Date: Sun, 16 Aug 2026 14:01:36 +0100
+Subject: [PATCH 4/4] deps: stop flac regenerating autotools output during the
+ build
+
+flac 1.4.2 ships generated autotools output but does not use
+AM_MAINTAINER_MODE, so the rules that regenerate aclocal.m4, configure
+and Makefile.in are always live. When unpacking leaves a generated file
+no newer than its source, those rules fire and invoke the exact automake
+the release was made with:
+
+  missing: line 81: aclocal-1.16: command not found
+  make[3]: *** [aclocal.m4] Error 127
+
+Installing automake does not help, because the version is hardcoded into
+the generated Makefiles. Nothing in this build edits configure.ac or the
+m4 files, so the shipped output is already correct; stamp it current so
+make leaves it alone.
+
+Not architecture specific -- it depends on the automake vintage of the
+build machine rather than on the target.
+---
+ build_files/build_environment/cmake/flac.cmake | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/build_files/build_environment/cmake/flac.cmake b/build_files/build_environment/cmake/flac.cmake
+index c8e5386cabf..0c9c75ac0b4 100644
+--- a/build_files/build_environment/cmake/flac.cmake
++++ b/build_files/build_environment/cmake/flac.cmake
+@@ -9,6 +9,21 @@ if(NOT WIN32)
+     URL_HASH ${FLAC_HASH_TYPE}=${FLAC_HASH}
+     PREFIX ${BUILD_DIR}/flac
+ 
++    # flac 1.4.2 ships generated autotools output but does not use
++    # AM_MAINTAINER_MODE, so its Makefiles always carry the rules that
++    # regenerate aclocal.m4, configure and Makefile.in. If unpacking leaves any
++    # generated file no newer than its source, those rules fire and call the
++    # exact automake the release was cut with, which is not installable today:
++    #
++    #   missing: line 81: aclocal-1.16: command not found
++    #   make[3]: *** [aclocal.m4] Error 127
++    #
++    # Nothing here edits configure.ac or the m4 files, so the shipped output is
++    # correct as-is; stamp it current so make leaves it alone.
++    PATCH_COMMAND sh -c "cd ${BUILD_DIR}/flac/src/external_flac/ && \
++      find . -name aclocal.m4 -o -name configure -o -name config.h.in \
++        -o -name Makefile.in | xargs touch"
++
+     CONFIGURE_COMMAND ${CONFIGURE_ENV} &&
+       cd ${BUILD_DIR}/flac/src/external_flac/ &&
+       ${CONFIGURE_COMMAND} --prefix=${LIBDIR}/flac --disable-shared --enable-static
+-- 
+2.50.1 (Apple Git-155)
+

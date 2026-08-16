@@ -1,7 +1,7 @@
 From 5cda2809c438ef80517135baffa32e35ffc4afe9 Mon Sep 17 00:00:00 2001
 From: Tom Hodgson <tom@justsanity.com>
 Date: Sat, 15 Aug 2026 23:11:49 +0100
-Subject: [PATCH 3/3] deps: only add clang ASM flags to x265 on Apple Silicon
+Subject: [PATCH 3/4] deps: only add clang ASM flags to x265 on Apple Silicon
 
 x265_apple.diff appends -isysroot and -mmacosx-version-min to x265's
 ASM_FLAGS for all Apple builds. On arm64 the assembler is clang, which
