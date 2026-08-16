@@ -1,7 +1,7 @@
 From d16f55f727f1de1fbe680043e27f23bd73cdcb9d Mon Sep 17 00:00:00 2001
 From: Tom Hodgson <tom@justsanity.com>
 Date: Sun, 16 Aug 2026 14:01:36 +0100
-Subject: [PATCH 4/4] deps: stop flac regenerating autotools output during the
+Subject: [PATCH 4/5] deps: stop flac regenerating autotools output during the
  build
 
 flac 1.4.2 ships generated autotools output but does not use

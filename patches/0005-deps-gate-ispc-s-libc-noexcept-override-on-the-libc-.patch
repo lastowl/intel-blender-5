@@ -1,0 +1,53 @@
+From 64e0070a304515f3ca20995e15bb5430b33ddd4d Mon Sep 17 00:00:00 2001
+From: Tom Hodgson <tom@justsanity.com>
+Date: Sun, 16 Aug 2026 22:21:21 +0100
+Subject: [PATCH 5/5] deps: gate ispc's libc++ noexcept override on the libc++
+ version
+
+ispc overrides std::__libcpp_verbose_abort and decides whether to mark
+it noexcept from ISPC_LLVM_VERSION. That is the LLVM version ispc is
+built against, not the libc++ it is compiled with, and the two disagree
+here: Blender builds ispc against LLVM 20.1.8 while the runner's Xcode
+16.4 SDK ships a libc++ that declares the function without noexcept.
+
+  util.cpp:51:11: error: exception specification in declaration does not
+  match previous declaration
+
+Gate on _LIBCPP_VERSION instead, which is what actually determines the
+declaration. libc++ 20 is where the noexcept appeared.
+
+Not architecture specific -- it depends on the Xcode/libc++ vintage of
+the build machine.
+---
+ .../build_environment/patches/ispc.diff        | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/build_files/build_environment/patches/ispc.diff b/build_files/build_environment/patches/ispc.diff
+index d576aba6502..6127475ceb9 100644
+--- a/build_files/build_environment/patches/ispc.diff
++++ b/build_files/build_environment/patches/ispc.diff
+@@ -10,3 +10,21 @@ diff -Naur ispc-1.28.0/cmake/GenerateBuiltins.cmake external_ispc/cmake/Generate
+          DEPENDS ${input}
+          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+          )
++diff -Naur ispc-1.28.0/src/util.cpp external_ispc/src/util.cpp
++--- ispc-1.28.0/src/util.cpp
+++++ external_ispc/src/util.cpp
++@@ -49,7 +49,13 @@
++ // system libc++.1.dylib. The symbol is there for macOS 13 Ventura and later, but not macOS 12 and earlier.
++ // See #3071 for more details.
++ void std::__libcpp_verbose_abort(char const *format, ...)
++-#if ISPC_LLVM_VERSION >= ISPC_LLVM_20_0
+++// Whether libc++ declares this function noexcept depends on the libc++ being
+++// compiled against, not on the LLVM version ispc is built with. Gating on
+++// ISPC_LLVM_VERSION mismatches the declaration whenever the two disagree, such
+++// as building against LLVM 20 with the libc++ from an older Xcode:
+++//   error: exception specification in declaration does not match previous
+++//   declaration
+++#if _LIBCPP_VERSION >= 200000
++     noexcept
++ #endif
++ {
+-- 
+2.50.1 (Apple Git-155)
+

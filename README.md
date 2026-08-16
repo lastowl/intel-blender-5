@@ -239,7 +239,13 @@ working build.
 | 4 | Reached 54%; `spirv-tools` no longer raced. `x265` failed: `nasm: error: unrecognised option '-m'`. Fixed by patch `0003`. |
 | 5 | `x265` fixed. Reached 56%; `flac` failed trying to regenerate autotools output with `aclocal-1.16`. Fixed by patch `0004`. |
 | 6 | `flac` fixed. Reached 70%; `zstandard` failed with its output hidden by `LOG_BUILD 1`. Workflow now surfaces those logs. |
-| 7 | in progress |
+| 7 | Cleared zstandard and **LLVM**. Failed at 335 min on `ispc` (libc++ noexcept mismatch). Fixed by patch `0005`. |
+
+Run 7 also established the real constraint: 335 minutes to reach `ispc`,
+with OSL, OpenImageIO, USD, OpenVDB and MaterialX still to build, against
+GitHub's hard 6-hour per-job ceiling on a 4-core runner. Patch `0005` alone
+will not make a run fit; the dependency build has to move off a single
+hosted job.
 
 Native Intel confirmed its worth in run 2: `aom` built AVX2 intrinsics
 correctly, the exact thing that fails when cross-compiling.
