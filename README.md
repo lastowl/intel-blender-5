@@ -184,6 +184,97 @@ x86_64 macOS image, available until **August 2027**. After that this needs a
 self-hosted Intel runner — which is also the option that would remove the
 6-hour ceiling entirely.
 
+## Identity and signing
+
+**Rebuilding this repo requires no Apple account, no certificate and no
+configuration.** Signing and notarization are driven entirely by secrets that
+are empty in a fork, and each script prints why it is skipping and exits 0.
+The result is an unsigned `.dmg`, which is the normal, supported outcome. A
+locally built app runs without ceremony; one that has been *downloaded*
+unsigned needs its quarantine flag cleared:
+
+```bash
+xattr -cr /Applications/Blender.app
+```
+
+### This is not an official Blender build, and says so
+
+Blender hardcodes `CFBundleIdentifier = org.blenderfoundation.blender`, with no
+CMake option to change it. An unofficial build inheriting that identifier
+collides with an official install in Launch Services, and a *signed* one
+asserts Blender Foundation provenance under someone else's Developer ID. So
+`scripts/brand-app.sh` runs unconditionally, signed or not, and:
+
+* sets the bundle identifier to `org.unofficial.blender-intel-x64` (override
+  with the `BUNDLE_ID` repository variable),
+* rewrites the Get Info string to say it is an unofficial x86_64 build not
+  affiliated with or endorsed by the Blender Foundation,
+* drops the exported `.blend` UTI claim, so an unofficial build cannot outrank
+  a real install as the system handler for `.blend` files.
+
+The defaults are deliberately generic. `BUNDLE_VENDOR` is empty unless set, so
+nobody who forks this inherits the identity of whoever published it. This is a
+technical best effort, not legal advice — check Blender's current trademark
+policy before distributing publicly.
+
+### Publishing signed releases
+
+Set these on the repository. Signing turns on when they are present:
+
+| Secret | Purpose |
+| --- | --- |
+| `MACOS_CERT_P12` | base64 of the Developer ID Application `.p12` |
+| `MACOS_CERT_PASSWORD` | its export password |
+| `MACOS_CODESIGN_IDENTITY` | e.g. `Developer ID Application: Example Ltd (TEAMID)` |
+| `APPLE_API_KEY_P8` | base64 App Store Connect API key, for notarization |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | its identifiers |
+
+| Variable | Purpose |
+| --- | --- |
+| `BUNDLE_ID` | override the unofficial bundle identifier |
+| `BUNDLE_VENDOR` | name shown in Get Info; blank when unset |
+
+An App Store Connect API key is preferred over an Apple ID and app-specific
+password: it is scoped, revocable, and no account password reaches the runner.
+The workflow imports the certificate into a temporary keychain and deletes it
+in an `if: always()` step, so a cert is never left behind on a failure.
+
+Hardened runtime is required for notarization and would break Blender without
+entitlements — Python `ctypes` needs unsigned executable memory, `.so` plugins
+need library validation disabled, and OSL's LLVM JIT needs `allow-jit`.
+`sign-app.sh` uses Blender's own `release/darwin/entitlements.plist` rather
+than inventing a set. Signing is inside-out: 193 nested binaries, then the
+thumbnailer extension with its sandbox entitlements, then the app. Signing the
+app first and its libraries afterwards silently invalidates the outer
+signature.
+
+Verified locally end to end: `flags=0x10000(runtime)`, valid Developer ID
+chain, timestamped, and the signed bundle still passes `ctypes`, imports
+`numpy`/`zstandard`, and renders with OSL. Gatekeeper reports
+`rejected / source=Unnotarized Developer ID` until the notarization step runs,
+which is expected.
+
+**Never run the app between signing and packaging.** Blender's bundled Python
+writes `__pycache__/*.pyc` next to its sources on import, and any `.pyc`
+created after signing is a file the signature does not cover:
+
+```
+a sealed resource is missing or invalid
+```
+
+This is easy to trigger by accident, and it bites silently — the image builds,
+uploads, and only fails on the user's machine. Three defences are in place:
+
+* `sign-app.sh` deletes every `__pycache__` directory before sealing, so the
+  signed set is deterministic (68 of them in a 5.2.0 bundle).
+* `package-dmg.sh` reads the version from `Info.plist` instead of executing
+  `Blender --version`. Running the binary to ask its version was itself enough
+  to break the signature it had just been given.
+* `package-dmg.sh` re-verifies a signed bundle before packaging and refuses to
+  build the image if the seal is broken, and copies with `ditto` rather than
+  `cp -R`, which does not reliably preserve the extended attributes a
+  signature depends on.
+
 ## Layout
 
 ```
@@ -193,7 +284,10 @@ scripts/package-deps.sh       compress + split a built stack for publishing
 scripts/publish-deps.sh       upload it as a GitHub release
 scripts/fetch-deps.sh         download the stack matching a Blender checkout
 scripts/build-blender-x64.sh  configure + build Blender, produce Blender.app
-scripts/package-dmg.sh        wrap Blender.app into a .dmg
+scripts/brand-app.sh          set unofficial bundle identity (always runs)
+scripts/sign-app.sh           codesign the bundle (skips with no identity)
+scripts/package-dmg.sh        wrap Blender.app into a .dmg, sign if configured
+scripts/notarize-dmg.sh       notarize + staple (skips with no credentials)
 patches/                      patch series, regenerated from the blender repo
 logs/                         build logs
 blender/                      Blender source checkout (branch: intel-x64-<ver>)
