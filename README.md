@@ -113,28 +113,67 @@ build-graph race, fixed by patch `0002`.)
 Each is a patch to write and then carry forever. That is the argument for
 building the dependencies natively.
 
-## Building in CI
+## The dependency stack does not fit in CI
 
-`.github/workflows/build-intel-mac.yml` builds natively on GitHub's Intel
-runner, caching the dependency stack so only the first run pays for it.
+GitHub's Intel runner has **4 cores**, and a job may run for at most **6
+hours**. The dependency stack needs roughly 7–8 hours there: run 7 of the
+workflow reached `ispc` at **335 minutes** with OSL, OpenImageIO, USD, OpenVDB
+and MaterialX still to build. That is a structural limit, not a bug to patch —
+`timeout-minutes` cannot exceed 360, and staging the build across jobs means
+carrying multi-GB state through a 10 GB cache.
 
-The cache is keyed on a hash of Blender's `versions.cmake`, not on the Blender
-tag, so releases that share dependency versions share one cached stack — a new
-mainline release usually costs a Blender build only, not a dependency build.
+So the stack is built **once on real Intel hardware** and published as a
+GitHub release. CI then builds Blender against it in well under an hour.
+
+This is cheap to live with because the release is tagged with a hash of
+Blender's `versions.cmake`, not with a Blender version. Any Blender revision
+whose dependency versions are unchanged reuses the same stack, so the usual
+cost of a new mainline release is a Blender build alone.
+
+### One time, on an Intel Mac
+
+```bash
+git clone https://github.com/lastowl/intel-blender-5.git
+cd intel-blender-5
+git clone --depth=1 --branch v5.2.0 \
+  https://projects.blender.org/blender/blender.git blender
+
+brew install autoconf automake bison dos2unix flex libtool \
+  meson ninja pkg-config yasm nasm git-lfs
+
+./scripts/apply-patches.sh
+./scripts/build-deps-x64.sh    # hours, unattended
+./scripts/package-deps.sh      # compress and split below the 2 GB asset cap
+./scripts/publish-deps.sh      # upload as a release
+```
+
+`build-deps-x64.sh` checks for CMake 3.x up front and prints how to install it
+rather than failing part-way through. If dependency versions later change,
+`fetch-deps.sh` fails loudly with the exact commands to rebuild, instead of
+silently using a stale stack.
+
+### Then, per Blender release
+
+Run the **Build Blender (Intel macOS)** workflow with the tag you want. It
+applies the patch series, fetches the published stack, builds, and uploads a
+`.dmg`.
 
 **Runner lifetime matters here.** `macos-13` was retired in December 2025. The
 replacement label is `macos-15-intel`, and GitHub has said it is the last
 x86_64 macOS image, available until **August 2027**. After that this needs a
-self-hosted Intel runner, or the cross-compile path above.
-
-The dependency build is also close to GitHub's 6-hour job ceiling on a cold
-cache, which is why dependencies and Blender are separate jobs.
+self-hosted Intel runner — which is also the option that would remove the
+6-hour ceiling entirely.
 
 ## Layout
 
 ```
-scripts/build-deps-x64.sh     build the x86_64 dependency stack
+scripts/apply-patches.sh      apply the patch series to a Blender checkout
+scripts/build-deps-x64.sh     build the x86_64 dependency stack (Intel Mac)
+scripts/package-deps.sh       compress + split a built stack for publishing
+scripts/publish-deps.sh       upload it as a GitHub release
+scripts/fetch-deps.sh         download the stack matching a Blender checkout
 scripts/build-blender-x64.sh  configure + build Blender, produce Blender.app
+scripts/package-dmg.sh        wrap Blender.app into a .dmg
 patches/                      patch series, regenerated from the blender repo
 logs/                         build logs
 blender/                      Blender source checkout (branch: intel-x64-<ver>)
