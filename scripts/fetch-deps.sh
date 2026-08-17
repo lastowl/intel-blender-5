@@ -22,8 +22,10 @@ hash="$(shasum -a 256 "$versions" | cut -c1-16)"
 tag="deps-x64-$hash"
 
 if [[ -z "$REPO" ]]; then
+  # Same normalisation as publish-deps.sh: strip scheme, an optional user@
+  # prefix, the host and any .git suffix.
   REPO="$(git -C "$ROOT" remote get-url origin 2>/dev/null |
-    sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+    sed -E 's#^git@github\.com:##; s#^https://([^@/]+@)?github\.com/##; s#\.git$##')"
 fi
 if [[ -z "$REPO" ]]; then
   echo "error: could not determine the repository; set REPO=owner/name" >&2

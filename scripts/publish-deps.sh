@@ -24,8 +24,11 @@ blender_rev="$(grep '^blender_rev=' "$OUT_DIR/manifest.txt" | cut -d= -f2)"
 
 # Default to the repository this checkout points at.
 if [[ -z "$REPO" ]]; then
+  # Strip scheme, any user@ prefix, host and .git suffix. HTTPS remotes that
+  # embed a username (https://user@github.com/owner/name.git) are common and
+  # were previously left intact, producing a mangled URL in the final message.
   REPO="$(git -C "$ROOT" remote get-url origin 2>/dev/null |
-    sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+    sed -E 's#^git@github\.com:##; s#^https://([^@/]+@)?github\.com/##; s#\.git$##')"
 fi
 if [[ -z "$REPO" ]]; then
   echo "error: could not determine the repository; set REPO=owner/name" >&2
