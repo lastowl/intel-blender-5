@@ -527,6 +527,7 @@ Solid-mode viewport acceleration already works and needs nothing.
 | 5 | `x265` fixed. Reached 56%; `flac` failed trying to regenerate autotools output with `aclocal-1.16`. Fixed by patch `0004`. |
 | 6 | `flac` fixed. Reached 70%; `zstandard` failed with its output hidden by `LOG_BUILD 1`. Workflow now surfaces those logs. |
 | 7 | Cleared zstandard and **LLVM**. Failed at 335 min on `ispc` (libc++ noexcept mismatch). Fixed by patch `0005`. |
+| 8 | First run of the redesigned single-job workflow, and the first **success**. Fetched the published stack, built Blender, packaged a `.dmg`. 1 h 40 m end to end. |
 
 Run 7 also established the real constraint: 335 minutes to reach `ispc`,
 with OSL, OpenImageIO, USD, OpenVDB and MaterialX still to build, against
@@ -618,5 +619,9 @@ value Blender would have.
   worth attempting.
 * Nothing is code-signed. `package-dmg.sh` produces an unsigned image and
   documents `xattr -cr` as the workaround.
-* CI has still never run the Blender job; that half of the workflow remains
-  untested on a runner.
+* ~~CI has never run the Blender job.~~ **Done** — run 8 completed green in
+  1 h 40 m and uploaded a 325 MB `.dmg`. `fetch-deps.sh` resolved the
+  `versions.cmake` hash to the published release, downloaded and unpacked the
+  stack, and the build proceeded unattended. The signing steps skipped
+  themselves cleanly with no secrets configured, which is exactly the
+  experience a fork should get.
