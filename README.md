@@ -560,6 +560,47 @@ Nor is it the texture pool: switching `direct_radiance_txs_` from
 `TextureFromPool` to persistent `Texture` (`ensure_2d` rather than
 `acquire_2d`/`release`) changes nothing.
 
+### The failure follows the texture, not the slot
+
+Swapping the image slot numbers in the shader (`direct_radiance_1_img` →
+`image(5)`, `indirect_radiance_1_img` → `image(2)`), verified at the encoder:
+
+```
+direct[0]   (uint,  now slot 5): nonzero=0
+indirect[0] (float, now slot 2): nonzero=39999
+```
+
+Not a binding-index problem. Logging the handle passed to
+`setFragmentTexture:atIndex:` shows the one structural difference:
+
+```
+indirect (works): parent=0x0                 -- base 2D texture
+direct   (fails): parent=0x7fa8901a9600      -- 2D VIEW of a 2D-array
+```
+
+`direct_radiance_*` is a pooled 2D **array** bound through a per-slice 2D view;
+the ray-tracing radiance textures are plain base resources.
+`ensure_texture_bindings()` already falls back to `get_metal_handle_base()` for
+`has_custom_swizzle()`, which hints the Metal backend knows views are delicate
+here — but forcing base for all image binds is **not** a fix: the base is
+`MTLTextureType2DArray` against a `texture2d` declaration, a type mismatch
+(tried; still 0.0).
+
+### None of it reproduces standalone
+
+* `docs/metal-imagestore-repro.mm` — R32Uint vs float fragment writes: both land.
+* `docs/metal-textureview-repro.mm` — plain 2D, a 2D-array view, and a view made
+  with the same **swizzle** API Blender uses: all three land 4096/4096.
+* `docs/metal-blender-shader-harness.mm` — extracts Blender's *own* captured MSL
+  for `_eevee_deferred_light_triple_frag` from the `.gputrace`, compiles it with
+  the real function constants, rebuilds the exact PSO (RGBA16F colour attachment
+  with `writeMask = None`, `Depth32Float_Stencil8`), binds the full 28-entry
+  texture table and six buffer slots, and draws: both writes land 4096/4096.
+
+Blender's shader, PSO, formats, views and binding table all work when driven
+directly. The failure needs Blender's full runtime context, and which part of
+that context remains unidentified.
+
 **That exhausts the headless avenues.** Everything reachable from the CPU side
 checks out: the shader runs, the descriptors are right, the bindings do not
 collide, the format is irrelevant, and both Metal validation layers are

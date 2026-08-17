@@ -163,6 +163,61 @@ Nor is it the texture pool. Changing `direct_radiance_txs_` from
 `TextureFromPool` to plain persistent `Texture` (with `ensure_2d` instead of
 `acquire_2d`/`release`) changes nothing — still exactly 0.0.
 
+**The failure follows the texture, not the binding slot**
+
+I swapped the image slot numbers in the shader so `direct_radiance_1_img`
+became `image(5)` and `indirect_radiance_1_img` became `image(2)`, and
+confirmed at the encoder that the swap took effect (`idx=5` now carries the
+R32Uint 200x200, `idx=2` the RG11B10):
+
+```
+direct[0]   (uint,  now slot 5): nonzero=0
+indirect[0] (float, now slot 2): nonzero=39999
+```
+
+So it is not a binding-index problem. Something about the
+`direct_radiance_*` texture objects specifically.
+
+**The one structural difference: view vs base resource**
+
+Logging the handle actually passed to `setFragmentTexture:atIndex:`:
+
+```
+idx=2 (indirect, works): tex=0x…0580  parent=0x0                 <- base 2D texture
+idx=5 (direct,  fails):  tex=0x…f270  parent=0x7fa8901a9600      <- 2D VIEW of a 2D-array
+```
+
+`direct_radiance_*` is a `TextureFromPool` allocated as a 2D **array** whose
+bound handle is a 2D texture view of one slice; the ray-tracing radiance
+textures are plain 2D base resources. Dozens of distinct view objects share the
+one parent.
+
+Note `ensure_texture_bindings()` already half-anticipates this — it falls back
+to `get_metal_handle_base()` when `has_custom_swizzle()` — but that only covers
+one route to a view. Forcing image bindings to always use the base is **not** a
+valid fix: the base is `MTLTextureType2DArray` while the shader declares
+`texture2d`, so it is a type mismatch (I tried; still 0.0).
+
+**But I could not reproduce any of this standalone**
+
+`docs/metal-textureview-repro.mm` writes from a fragment shader to three
+targets on this GPU: a plain 2D texture, a 2D view of a 2D-array made with the
+4-argument API, and a 2D view made with the same **swizzle** API Blender uses
+(`newTextureViewWithPixelFormat:textureType:levels:slices:swizzle:`) with an
+identity mask. All three land 4096/4096.
+
+`docs/metal-blender-shader-harness.mm` goes further: it extracts Blender's own
+captured MSL for `_eevee_deferred_light_triple_frag` out of the `.gputrace`,
+compiles it with the real function-constant values, builds a PSO matching the
+one Blender bakes (RGBA16F colour attachment with `writeMask = None`,
+`Depth32Float_Stencil8` depth/stencil), binds the full 28-entry texture table
+and the six buffer slots, and draws. Both the uint and float writes land
+4096/4096.
+
+So Blender's shader, its PSO state, its texture formats, its views and its
+binding table all work when driven directly. The failure needs Blender's full
+runtime context, and I have not isolated which part of that context it is.
+
 At that point I am out of headless ideas. Everything I can reach from the CPU
 side looks right: the shader runs, the descriptors are right, the bindings do
 not collide, the format is irrelevant, and validation is silent. The write
