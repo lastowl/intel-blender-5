@@ -234,6 +234,21 @@ Set these on the repository. Signing turns on when they are present:
 | `BUNDLE_ID` | override the unofficial bundle identifier |
 | `BUNDLE_VENDOR` | name shown in Get Info; blank when unset |
 
+`scripts/setup-signing-secrets.sh` configures all of these. Run
+`--check` first to see what is currently set without changing anything:
+
+```bash
+./scripts/setup-signing-secrets.sh --check
+./scripts/setup-signing-secrets.sh ~/Desktop/developer-id.p12 ~/Desktop/AuthKey_XXXX.p8
+```
+
+It derives the identity string from the certificate rather than trusting you to
+type it, refuses an expired certificate up front rather than after a long CI
+run, and pipes every value to `gh` on stdin because command arguments are
+visible in the process list. The `.p12` itself has to be exported by hand from
+Keychain Access — a private key cannot be extracted non-interactively, and
+should not be.
+
 An App Store Connect API key is preferred over an Apple ID and app-specific
 password: it is scoped, revocable, and no account password reaches the runner.
 The workflow imports the certificate into a temporary keychain and deletes it
@@ -288,6 +303,7 @@ scripts/brand-app.sh          set unofficial bundle identity (always runs)
 scripts/sign-app.sh           codesign the bundle (skips with no identity)
 scripts/package-dmg.sh        wrap Blender.app into a .dmg, sign if configured
 scripts/notarize-dmg.sh       notarize + staple (skips with no credentials)
+scripts/setup-signing-secrets.sh  configure the CI signing secrets (opt-in)
 patches/                      patch series, regenerated from the blender repo
 logs/                         build logs
 blender/                      Blender source checkout (branch: intel-x64-<ver>)
