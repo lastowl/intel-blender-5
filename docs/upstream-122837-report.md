@@ -86,18 +86,50 @@ Working down the deferred path with instrumented builds:
    `DRW_STATE_STENCIL_ALWAYS`) **and** with `DRW_STATE_DEPTH_LESS` removed
    from that sub-pass, so neither early-fragment test explains it.
 
-So the pass is dispatched, the GBuffer feeding it is valid, and the fragment
-shader's `imageStore` into `direct_radiance_*_img` does not reach the screen.
-The remaining suspect I have not been able to exclude is **fragment-shader
-`imageStore` into these images silently not landing on this GPU**. That would
-fit every observation: the GBuffer is written through ordinary colour
-attachments and works; emission and `BLENDED` both output through colour
-attachments and work; only the deferred lighting result, which is written via
-`imageStore`, disappears. A dropped write is also not an API error, which is
-consistent with validation being clean.
+4. **The fragment shader executes, and can write one bound image but not
+   another, in the same invocation.** This is the sharpest result I have. I put
+   two unconditional `imageStore` calls side by side at the top of
+   `light_eval_frag`, before any branch:
 
-I have not proven that last step, and would welcome a pointer on how you would
-confirm or refute it.
+   ```glsl
+   imageStore(srt.direct_radiance_1_img,   texel, uint4(rgb9e5_encode(float3(4, 0, 0))));
+   imageStore(srt.indirect_radiance_1_img, texel, float4(0, 4, 0, 1));
+   ```
+
+   Reading both textures back immediately after
+   `manager->submit(eval_light_ps_, render_view)`:
+
+   ```
+   direct_radiance[0]   (uint)  200x200 nonzero=0/40000
+   indirect_radiance[0] (float) 200x200 nonzero=40000/160000
+   ```
+
+   The indirect write lands on **every pixel**. The direct write lands on
+   **none**. Same shader, same fragment, adjacent statements. So the fragment
+   shader is definitely running, and the failure is specific to the
+   `direct_radiance_*` images.
+
+**Things that are *not* the cause**
+
+I assumed the difference was the pixel format —
+`DEFERRED_RADIANCE_FORMAT` is `UINT_32` (RGB9E5-packed) while
+`RAYTRACE_RADIANCE_FORMAT` is `UFLOAT_11_11_10`. It is not. I converted the
+whole deferred radiance path to the float format (`eevee_defines.hh`, the eval
+shader's `uimage2D`→`image2D` and the dropped `rgb9e5_encode`, the combine
+shader's `usampler2D`→`sampler2D` and dropped `rgb9e5_decode`, and the matching
+changes in `eevee_subsurface.bsl.hh`), rebuilt, and cleared the shader cache.
+**Still exactly 0.0.** That change is reverted.
+
+Nor is it the texture pool: `--debug-gpu-no-texture-pool` changes nothing. Nor
+is it an image binding slot collision — the render-buffer images occupy slots 0
+and 1, the radiance images 2–7.
+
+So the remaining difference between an image that accepts writes and one that
+does not, from the same shader, is **how `direct_radiance_txs_` are allocated
+and bound** (`TextureFromPool::acquire_2d(..., usage_read | usage_write)` in
+`DeferredLayer::render()`) versus the raytracing-owned
+`indirect_result_.closures[]`. I have not found what about that differs in a
+way this GPU cares about, and would value a pointer.
 
 **I have a Metal frame capture of the failing frame**
 

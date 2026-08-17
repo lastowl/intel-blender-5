@@ -499,9 +499,43 @@ right access qualifiers and the bindings are sane — the writes simply never
 appear. (Reading a single shader first suggested the opposite; surveying all of
 them showed the `access::read` copies were just the combine shader.)
 
-Remaining avenue: open the trace in Xcode's Metal debugger and step the
-`Eval.Light` draw to inspect the bound image contents and the actual
-per-fragment writes.
+### The sharpest result: one image accepts writes, another does not
+
+Two unconditional `imageStore` calls placed side by side at the top of
+`light_eval_frag`, before any branch, then both textures read back immediately
+after the pass:
+
+```
+direct_radiance[0]   (uint,  DEFERRED_RADIANCE_FORMAT)  nonzero=0/40000
+indirect_radiance[0] (float, RAYTRACE_RADIANCE_FORMAT)  nonzero=40000/160000
+```
+
+Same shader, same fragment, adjacent statements. The indirect write lands on
+every pixel; the direct write lands on none. **So the fragment shader
+definitely runs**, and the fault is specific to the `direct_radiance_*` images.
+
+### What it is *not*
+
+The obvious inference was the pixel format — `UINT_32` (RGB9E5-packed) versus
+`UFLOAT_11_11_10`. **Wrong.** Converting the entire deferred radiance path to
+the float format — `eevee_defines.hh`, `uimage2D`→`image2D` and dropping
+`rgb9e5_encode` in the eval shader, `usampler2D`→`sampler2D` and dropping
+`rgb9e5_decode` in the combine shader, plus the matching changes in
+`eevee_subsurface.bsl.hh` — rebuilt with the shader cache cleared, still gives
+exactly 0.0. That change is reverted; it fixed nothing and cost precision.
+
+Also excluded: the texture pool (`--debug-gpu-no-texture-pool` changes
+nothing), and image slot collision (render buffers occupy slots 0–1, radiance
+2–7).
+
+That leaves the difference between how `direct_radiance_txs_` are allocated —
+`TextureFromPool::acquire_2d(..., usage_read | usage_write)` inside
+`DeferredLayer::render()` — and the raytracing-owned
+`indirect_result_.closures[]` that accept writes fine. Not yet identified.
+
+Remaining avenues: open the trace in Xcode's Metal debugger and inspect the
+`Eval.Light` draw's bound image descriptors (usage flags in particular), or
+diff how the two texture sets reach the Metal backend.
 
 ### Workaround available today
 
