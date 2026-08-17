@@ -418,15 +418,36 @@ Each was tested by patching, rebuilding and re-measuring, not by reading code:
 | The ATI/Intel Mac gbuffer bind workaround is itself wrong | disabled it in `eevee_gbuffer.hh` | still 0.0 |
 | Metal claims `stencil_export_support` but AMD cannot do it | forced it false, taking the per-bit fallback path | still 0.0 (flag confirmed `0` at runtime) |
 | One of the known Metal caveats (texture gather, texture atomics, native tile inputs, texture pool) | `--debug-gpu-force-workarounds` | still 0.0 |
+| Blender is making a Metal call AMD rejects and Apple Silicon tolerates | `METAL_DEVICE_WRAPPER_TYPE=1 MTL_SHADER_VALIDATION=1` | **no errors at all** — every call is valid |
 
 The stencil-export result is worth recording upstream: it is the mechanism the
 developer's "points to the stencil classify shader" hypothesis implies, and
 disabling it changes nothing. Either the classify shader computes no bits at
 all, or the deferred lighting pass fails for a reason unrelated to stencil.
 
-Next step is a Metal frame capture (Xcode is installed) to inspect the stencil
-buffer and GBuffer contents directly after the classify pass, which would
-finally give upstream the reproduction they have been missing.
+**Still open: is the GBuffer written, or is the lighting pass failing to read
+it?** That is the question that would split the remaining possibilities, and it
+is not yet answered. The obvious tools for it, EEVEE's `DEBUG_GBUFFER_STORAGE`
+(14) and `DEBUG_GBUFFER_EVALUATION` (15), turn out **not to run during an F12
+render** — `DeferredPipeline::debug_pass_sync()` early-returns because
+`Instance::debug_mode` is never set from `G.debug_value` on the render path.
+Confirmed by instrumenting it: zero invocations in a render, 16 in the
+viewport. So capturing them needs an interactive viewport session, which is
+awkward to automate (driving it via `read_homefile()` deregisters the timers
+that were meant to take the screenshot).
+
+Next steps, in order of expected value:
+
+1. Capture `DEBUG_GBUFFER_STORAGE` **by hand** in the viewport — open Blender,
+   set the 3D view to Rendered, set Debug Value to 14 in Preferences →
+   Interface → Developer Extras. If the cube shows storage cost, the GBuffer is
+   populated and the fault is downstream; if it stays black, the GBuffer write
+   is the fault. This is a minute of clicking and settles the question.
+2. A Metal frame capture from Xcode (installed) to inspect the stencil buffer
+   and GBuffer attachments directly.
+
+A draft report for upstream is in `docs/upstream-122837-report.md`, written to
+give them the reproducing machine they have been missing. It is not posted.
 
 ### Workaround available today
 
