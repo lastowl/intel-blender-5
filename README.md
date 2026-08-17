@@ -377,9 +377,65 @@ driver/compiler problem upstream cited when removing AMD from Cycles Metal —
 which weakens the assumption that a Cycles revert would produce correct output
 on this hardware even once it compiles.
 
-Not yet investigated: whether this is a shadow-map path, a light-culling path,
-or a UBO/SSBO binding problem on AMD Metal; and whether interactive material
-preview behaves the same as an F12 render.
+### It is EEVEE's deferred path, and it is a known upstream bug
+
+The failure is exactly and only the **deferred** pipeline. Setting a material's
+render method switches which path it takes, and that flips the result:
+
+| Material render method | Path | Cube brightness |
+| --- | --- | --- |
+| `DITHERED` (default) | deferred | **0.0** |
+| `BLENDED` | forward | **0.549**, correct |
+
+Zero is *exact*, and stays exact with shadows disabled globally, shadows
+disabled per-light, ray-tracing off, and light energy raised to 100000. Nothing
+is being attenuated — the deferred lighting pass simply never shades those
+pixels.
+
+This is [#122837, "EEVEE: Black surfaces on Intel GPU"][b1], **open and
+`Status/Confirmed` since June 2024** and still being commented on in 2026. It
+covers Intel iGPUs on Windows and AMD Radeon Pro on macOS together. Two things
+in that thread matter here:
+
+* A Blender developer reached the same conclusion from the same test —
+  "*The Emission Shader works*" → "*Ok this points to the stencil classify
+  shader!*"
+* It is unfixed because **nobody upstream can reproduce it**: "*I haven't been
+  able to reproduce this issue locally as I don't have the same hardware
+  [...] I am lowering the priority of this issue until we found a way to
+  reproduce it.*"
+
+That is the real opportunity. We have the hardware they lack, a full source
+tree, and a warm build directory where an EEVEE or GPU-backend change rebuilds
+in about two minutes.
+
+### Hypotheses eliminated so far
+
+Each was tested by patching, rebuilding and re-measuring, not by reading code:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| The ATI/Intel Mac gbuffer bind workaround is itself wrong | disabled it in `eevee_gbuffer.hh` | still 0.0 |
+| Metal claims `stencil_export_support` but AMD cannot do it | forced it false, taking the per-bit fallback path | still 0.0 (flag confirmed `0` at runtime) |
+| One of the known Metal caveats (texture gather, texture atomics, native tile inputs, texture pool) | `--debug-gpu-force-workarounds` | still 0.0 |
+
+The stencil-export result is worth recording upstream: it is the mechanism the
+developer's "points to the stencil classify shader" hypothesis implies, and
+disabling it changes nothing. Either the classify shader computes no bits at
+all, or the deferred lighting pass fails for a reason unrelated to stencil.
+
+Next step is a Metal frame capture (Xcode is installed) to inspect the stencil
+buffer and GBuffer contents directly after the classify pass, which would
+finally give upstream the reproduction they have been missing.
+
+### Workaround available today
+
+Set the material's **Settings → Surface → Render Method** from `Dithered` to
+`Blended`. Verified here: black becomes a correctly lit surface matching
+Cycles. It is not free — forward rendering changes transparency sorting and
+costs performance — but it makes EEVEE usable on an AMD Mac right now.
+
+[b1]: https://projects.blender.org/blender/blender/issues/122837
 
 **Cycles GPU rendering does not.** AMD and Intel were removed from the Cycles
 Metal backend in 4.3 by `c8340cf7541` ("Cycles: Remove AMD and Intel GPU
