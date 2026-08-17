@@ -135,17 +135,37 @@ cost of a new mainline release is a Blender build alone.
 ```bash
 git clone https://github.com/lastowl/intel-blender-5.git
 cd intel-blender-5
-git clone --depth=1 --branch v5.2.0 \
-  https://projects.blender.org/blender/blender.git blender
 
+# Install the toolchain BEFORE cloning Blender. git-lfs has to exist at clone
+# time or its smudge filter never runs, and Blender's configure then stops
+# with "Detected incomplete startup blend, likely due to missing Git LFS
+# checkout". `git lfs pull` below repairs a checkout made without it.
 brew install autoconf automake bison dos2unix flex libtool \
   meson ninja pkg-config yasm nasm git-lfs
+
+git clone --depth=1 --branch v5.2.0 \
+  https://projects.blender.org/blender/blender.git blender
+git -C blender lfs pull
+
+# The dependency build needs CMake 3.x (see above). Put it somewhere durable
+# rather than /tmp -- the build runs for hours and may span a reboot.
+version=3.31.12
+curl -fsSL -o /tmp/cmake.tar.gz \
+  "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-macos-universal.tar.gz"
+mkdir -p ~/.local/opt/cmake-${version}
+tar -xzf /tmp/cmake.tar.gz -C ~/.local/opt/cmake-${version} --strip-components=1
+export PATH="$HOME/.local/opt/cmake-${version}/CMake.app/Contents/bin:$PATH"
 
 ./scripts/apply-patches.sh
 ./scripts/build-deps-x64.sh    # hours, unattended
 ./scripts/package-deps.sh      # compress and split below the 2 GB asset cap
 ./scripts/publish-deps.sh      # upload as a release
 ```
+
+`build-deps-x64.sh` defaults to `hw.ncpu` jobs. On a machine with fewer
+physical cores than threads, set `NPROCS` below that — LLVM and USD link steps
+are memory-hungry, and swapping costs more than the extra threads gain. The
+build recorded below used `NPROCS=12` on 8 physical cores / 32 GB.
 
 `build-deps-x64.sh` checks for CMake 3.x up front and prints how to install it
 rather than failing part-way through. If dependency versions later change,
@@ -267,6 +287,13 @@ working build.
   link. A validation build, not a shippable one.
 * The patch series applies cleanly to both `v5.2.0` and mainline (5.3 alpha),
   which is the property that makes it re-appliable each release.
+* **The full x86_64 dependency stack builds on real Intel hardware.** 1.3 GB
+  harvested from `v5.2.0` plus patches `0001`–`0008`; all 403 `.a`/`.dylib`
+  files are `x86_64` with no exceptions. Python is 3.13.13, and every
+  dependency the frozen 4.5-era set lacked is present: `abseil`, `ceres`,
+  `draco`, `eigen`, `fmt`, `meshoptimizer`, `openjph`, `rubberband`, `thorvg`,
+  `tracy`, `xml2`, `xr_openxr_sdk`, and an ffmpeg with `libavfilter`.
+  This is the artefact the whole split design depends on.
 
 **CI history**
 
@@ -288,6 +315,47 @@ hosted job.
 
 Native Intel confirmed its worth in run 2: `aom` built AVX2 intrinsics
 correctly, the exact thing that fails when cross-compiling.
+
+Note the correction below: run 6's zstandard failure was never actually
+fixed. It is a race, and run 7 only got lucky.
+
+**Native Intel build history** (i9-9980HK, 8 cores / 32 GB, `NPROCS=12`,
+Apple clang 21 / macOS 26.5 SDK)
+
+| Attempt | Outcome |
+| --- | --- |
+| 1 | Cleared `x265`, `flac`, `aom` and **LLVM** in 65 min. Failed on `zstandard`: `ModuleNotFoundError: No module named 'packaging'`. Fixed by patch `0006`. |
+| 2 | Cleared `zstandard`, **`ispc`** (11 min in — patch `0005` validated), MaterialX and OpenVDB. Reached 96%; `openimagedenoise` failed needing the Metal shader compiler. Fixed by patch `0007`. |
+| 3 | Cleared OIDN and `shaderc`. Reached 98%; `openimageio` failed compiling against Mono's bundled libtiff 4.0.9. Fixed by patch `0008`. |
+| 4 | Cleared OpenImageIO, OSL and USD. **100%, complete stack harvested.** |
+
+Three findings there that CI could not structurally have produced:
+
+* **`zstandard` is a build-graph race, not a transient.** Its `setup.py`
+  imports `packaging`, which `external_python_site_packages` installs, but
+  `external_zstandard` only declared `external_python`. More parallelism
+  exposes it; 4 cores mostly hid it. `numpy` and `cython` are held out of the
+  pip install for the same reproducibility reason and both already declared
+  the edge — zstandard was the omission. Patch `0006`.
+* **OIDN's Metal device is wrong on Intel.** `openimagedenoise.cmake` set
+  `OIDN_DEVICE_METAL=ON` for all of `APPLE`. OIDN supports Metal only on
+  "Apple silicon GPUs (M1 and newer)", so on x86_64 it builds a backend the
+  hardware can never instantiate — and building it needs the Metal shader
+  compiler, a separate Xcode component absent from Command Line Tools. Fatal
+  at 96% for nothing. Patch `0007` gates it on `BLENDER_PLATFORM_ARM`; the CPU
+  device is unaffected.
+* **An unpinned JPEG defeats a pinned TIFF.** `CMAKE_FIND_FRAMEWORK` defaults
+  to `FIRST` on macOS. ZLIB, PNG and TIFF are pinned by explicit
+  `_LIBRARY`/`_INCLUDE_DIR`, but JPEG is only hinted via `JPEG_ROOT`, so a Mono
+  install resolves `JPEG_INCLUDE_DIR` to `Mono.framework/Headers` — which also
+  ships `tiffio.h` from libtiff 4.0.9 and shadows our 4.7.1 via `-isystem`.
+  Only reproduces on hosts carrying such a framework, which is why CI never saw
+  it. Patch `0008` sets `CMAKE_FIND_FRAMEWORK=LAST`. The stack is meant to be
+  hermetic.
+
+The dependency stack does fit comfortably on real hardware: roughly 2 hours of
+wall time across the four attempts, against the 7–8 hours CI needed to not
+even finish.
 
 **Not yet done**
 

@@ -1,0 +1,75 @@
+From 03e60cf0894fb0ba4e7f6e9c8d098725a0ab315d Mon Sep 17 00:00:00 2001
+From: Intel Mac Builds <noreply@localhost>
+Date: Mon, 17 Aug 2026 12:54:51 +0100
+Subject: [PATCH] deps: enable OIDN's Metal device only on Apple Silicon
+
+openimagedenoise.cmake sets -DOIDN_DEVICE_METAL=ON for all APPLE builds,
+with no architecture gate. On x86_64 that is wrong twice over.
+
+It cannot work at runtime. OIDN's own README lists its supported Metal
+hardware as "Apple silicon GPUs (M1 and newer)". An Intel Mac has an AMD
+or Intel GPU, so the Metal backend it produces could never be
+instantiated.
+
+And it cannot even be built without full Xcode. Compiling the Metal
+kernels shells out to the Metal shader compiler, which since Xcode 16 is
+a separately downloaded component and is absent from Command Line Tools
+entirely:
+
+  xcrun: error: unable to find utility "metal"
+  make[5]: *** [.../OpenImageDenoise_device_metal.dir/metal_kernels.air] Error 72
+  make[2]: *** [.../external_openimagedenoise-build] Error 2
+
+That failure is fatal to the whole dependency build, at 96%, for a
+backend the target hardware can never use.
+
+Gate it on BLENDER_PLATFORM_ARM, which options.cmake sets only when
+CMAKE_OSX_ARCHITECTURES is arm64. Apple Silicon is unaffected. The
+x86_64 path sets OIDN_DEVICE_CPU=ON explicitly -- that is already OIDN's
+default, but stating it keeps the intent legible: CPU is the only
+denoising device an Intel Mac can use.
+---
+ .../cmake/openimagedenoise.cmake              | 27 ++++++++++++++++---
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/build_files/build_environment/cmake/openimagedenoise.cmake b/build_files/build_environment/cmake/openimagedenoise.cmake
+index 2ddcbd63..228240c3 100644
+--- a/build_files/build_environment/cmake/openimagedenoise.cmake
++++ b/build_files/build_environment/cmake/openimagedenoise.cmake
+@@ -11,10 +11,29 @@ set(OIDN_EXTRA_ARGS
+   -DPython_EXECUTABLE=${PYTHON_BINARY}
+ )
+ if(APPLE)
+-  set(OIDN_EXTRA_ARGS
+-    ${OIDN_EXTRA_ARGS}
+-    -DOIDN_DEVICE_METAL=ON
+-  )
++  # OIDN's Metal device targets "Apple silicon GPUs (M1 and newer)" only -- an
++  # Intel Mac's AMD or Intel GPU is not on its supported list, so the backend
++  # could never be instantiated at runtime there. Building it anyway hard-
++  # requires the Metal shader compiler, which is a separate Xcode component and
++  # is absent under Command Line Tools, taking the whole dependency build down:
++  #
++  #   xcrun: error: unable to find utility "metal"
++  #   make[5]: *** [.../OpenImageDenoise_device_metal.dir/metal_kernels.air] Error 72
++  #
++  # So enable Metal only on Apple Silicon. OIDN_DEVICE_CPU defaults to ON, but
++  # set it explicitly on the x86_64 path so the intent is visible: CPU is the
++  # only denoising device an Intel Mac can use.
++  if(BLENDER_PLATFORM_ARM)
++    set(OIDN_EXTRA_ARGS
++      ${OIDN_EXTRA_ARGS}
++      -DOIDN_DEVICE_METAL=ON
++    )
++  else()
++    set(OIDN_EXTRA_ARGS
++      ${OIDN_EXTRA_ARGS}
++      -DOIDN_DEVICE_CPU=ON
++    )
++  endif()
+ else()
+   set(OIDN_EXTRA_ARGS
+     ${OIDN_EXTRA_ARGS}
+-- 
+2.54.0
+

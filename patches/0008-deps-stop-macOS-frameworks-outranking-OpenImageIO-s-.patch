@@ -1,0 +1,80 @@
+From 63c54f2376c14d9a16482a077465b684ef617e23 Mon Sep 17 00:00:00 2001
+From: Intel Mac Builds <noreply@localhost>
+Date: Mon, 17 Aug 2026 13:05:18 +0100
+Subject: [PATCH] deps: stop macOS frameworks outranking OpenImageIO's pinned
+ libraries
+
+OpenImageIO failed to compile against a libtiff header it was never
+pointed at:
+
+  tiffoutput.cpp:1288:10: error: no matching function for call to
+                                 'TIFFWriteCustomDirectory'
+  /Library/Frameworks/Mono.framework/Headers/tiffio.h:413:12: note:
+    candidate function not viable: no known conversion from 'uint64_t *'
+    to 'uint64 *' for 2nd argument
+
+TIFF_INCLUDE_DIR was correct and pointed at our libtiff 4.7.1. The
+header that actually got included came from Mono, which bundles libtiff
+4.0.9 -- old enough that TIFFWriteCustomDirectory still took uint64*.
+
+The route in is JPEG. CMAKE_FIND_FRAMEWORK defaults to FIRST on macOS,
+so find_package() searches /Library/Frameworks before the paths pinned
+here. ZLIB, PNG and TIFF are immune because they are pinned by explicit
+_LIBRARY and _INCLUDE_DIR; JPEG is only hinted at through JPEG_ROOT, so
+the framework wins and JPEG_INCLUDE_DIR resolves to
+/Library/Frameworks/Mono.framework/Headers. That one directory holds
+jpeglib.h, png.h and tiffio.h together, and it reaches the compiler as
+-isystem ahead of our tiff include -- so an unpinned JPEG quietly
+defeats a correctly pinned TIFF.
+
+Set CMAKE_FIND_FRAMEWORK=LAST for this build. It is scoped to APPLE, so
+Windows and Linux are untouched, and it fixes the whole class rather
+than just the JPEG instance: a self-contained dependency stack should
+never prefer a system framework over the libraries it just built.
+
+Only reproducible on hosts with a framework that bundles image
+libraries, which is why CI never saw it -- GitHub's runners have no Mono
+install. That makes it a portability bug in the build, not a local
+quirk: the stack is supposed to be hermetic.
+---
+ .../build_environment/cmake/openimageio.cmake | 24 +++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/build_files/build_environment/cmake/openimageio.cmake b/build_files/build_environment/cmake/openimageio.cmake
+index 2107a9aa..78315ada 100644
+--- a/build_files/build_environment/cmake/openimageio.cmake
++++ b/build_files/build_environment/cmake/openimageio.cmake
+@@ -107,6 +107,30 @@ set(OPENIMAGEIO_EXTRA_ARGS
+   -DLibheif_DIR=${LIBDIR}/libheif/lib/cmake/libheif
+ )
+ 
++if(APPLE)
++  # CMAKE_FIND_FRAMEWORK defaults to FIRST on macOS, so find_package() prefers
++  # anything under /Library/Frameworks over the locations pinned above. ZLIB,
++  # PNG and TIFF survive that because they are pinned by explicit
++  # _LIBRARY/_INCLUDE_DIR; JPEG is only hinted at via JPEG_ROOT, so a stray
++  # framework outranks it. A Mono installation resolves JPEG_INCLUDE_DIR to
++  # /Library/Frameworks/Mono.framework/Headers, and that directory also ships a
++  # libtiff 4.0.9 tiffio.h. It reaches the compiler as -isystem ahead of our
++  # libtiff 4.7.1 and shadows it, so the pinned TIFF is defeated by the
++  # unpinned JPEG:
++  #
++  #   tiffoutput.cpp:1288:10: error: no matching function for call to
++  #                                  'TIFFWriteCustomDirectory'
++  #   Mono.framework/Headers/tiffio.h:413:12: note: candidate not viable: no
++  #                                  known conversion from 'uint64_t *' to 'uint64 *'
++  #
++  # The dependency stack is meant to be self-contained, so make framework
++  # search a last resort rather than the first one.
++  set(OPENIMAGEIO_EXTRA_ARGS
++    ${OPENIMAGEIO_EXTRA_ARGS}
++    -DCMAKE_FIND_FRAMEWORK=LAST
++  )
++endif()
++
+ if(WIN32)
+   # We don't want the SOABI tags in the final filename since it gets the debug
+   # tags wrong and the final .pyd won't be found by python, pybind11 will try to
+-- 
+2.54.0
+
