@@ -14,5 +14,6 @@
 
 # Release artifacts.
 *.dmg
+/deps-package/
 
 .DS_Store
