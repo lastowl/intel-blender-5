@@ -425,29 +425,49 @@ developer's "points to the stencil classify shader" hypothesis implies, and
 disabling it changes nothing. Either the classify shader computes no bits at
 all, or the deferred lighting pass fails for a reason unrelated to stencil.
 
-**Still open: is the GBuffer written, or is the lighting pass failing to read
-it?** That is the question that would split the remaining possibilities, and it
-is not yet answered. The obvious tools for it, EEVEE's `DEBUG_GBUFFER_STORAGE`
-(14) and `DEBUG_GBUFFER_EVALUATION` (15), turn out **not to run during an F12
-render** — `DeferredPipeline::debug_pass_sync()` early-returns because
-`Instance::debug_mode` is never set from `G.debug_value` on the render path.
-Confirmed by instrumenting it: zero invocations in a render, 16 in the
-viewport. So capturing them needs an interactive viewport session, which is
-awkward to automate (driving it via `read_homefile()` deregisters the timers
-that were meant to take the screenshot).
+### Traced down the deferred path
 
-Next steps, in order of expected value:
+Instrumented builds, reading GPU state back directly:
 
-1. Capture `DEBUG_GBUFFER_STORAGE` **by hand** in the viewport — open Blender,
-   set the 3D view to Rendered, set Debug Value to 14 in Preferences →
-   Interface → Developer Extras. If the cube shows storage cost, the GBuffer is
-   populated and the fault is downstream; if it stays black, the GBuffer write
-   is the fault. This is a minute of clicking and settles the question.
-2. A Metal frame capture from Xcode (installed) to inspect the stencil buffer
-   and GBuffer attachments directly.
+1. **The GBuffer is written correctly.** Reading `gbuffer.header_tx` back right
+   after the GBuffer pass gives `nonzero=4175/80000, max=0x1000031` — the
+   cube's screen area, with real closure bits. So the GBuffer write is *not*
+   the fault, and the classify shader receives valid input. (This refutes the
+   intuitive guess that the GBuffer was empty.)
+2. **The `Eval.Light` pass is dispatched.** `closure_count_ = 2`, two loop
+   iterations, `eval_light_ps_.is_empty() == 0`, 64 submissions per render.
+3. **Yet the eval fragment shader emits nothing, even unconditionally.** An
+   unconditional `write_radiance_direct(0, texel, float3(4,0,0))` at the very
+   top of `light_eval_frag`, with `write_radiance_direct` itself forced to a
+   constant, still leaves the cube at exactly 0.0 — with the stencil test
+   bypassed *and* `DRW_STATE_DEPTH_LESS` removed, so neither early-fragment
+   test explains it.
 
-A draft report for upstream is in `docs/upstream-122837-report.md`, written to
-give them the reproducing machine they have been missing. It is not posted.
+So: the pass runs, its input is valid, and its output never lands. The
+remaining suspect — not yet proven — is that **fragment-shader `imageStore`
+into the `direct_radiance_*_img` images silently does nothing on this GPU**.
+That fits everything: the GBuffer, emission and `BLENDED` all write through
+ordinary colour attachments and all work; only the deferred lighting result,
+written via `imageStore`, disappears. A dropped write is not an API error,
+which is consistent with validation being clean.
+
+### A separate latent bug found on the way
+
+`eevee_deferred_tile_classify.bsl.hh` picks its stencil path at **compile
+time** (`#if defined(GPU_ARB_shader_stencil_export) || defined(GPU_METAL)`),
+while `DeferredLayer::render()` picks at **runtime** on
+`GPU_stencil_export_support()`. On Metal these disagree: forcing the capability
+false makes the host issue the per-bit fallback draws while the shader still
+compiles the `gl_FragStencilRefARB` branch and ignores `current_bit`. The
+fallback is unreachable on Metal, and anyone testing it naively gets a
+misleading pass — as happened here on the first attempt.
+
+A draft report carrying all of this is in `docs/upstream-122837-report.md`,
+written to give upstream the reproducing machine they have been missing. It is
+not posted; that is a maintainer decision.
+
+Remaining avenue: a Metal frame capture from Xcode to confirm or refute the
+`imageStore` hypothesis directly.
 
 ### Workaround available today
 

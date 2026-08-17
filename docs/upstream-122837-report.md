@@ -51,6 +51,75 @@ The zero is exact and stays exact at 100000 W, so nothing is being attenuated â€
 those pixels are never shaded. This matches the emission/`BLENDED` findings
 already in the thread, on AMD/macOS rather than Intel/Windows.
 
+**Where the failure is, as far as I have traced it**
+
+Working down the deferred path with instrumented builds:
+
+1. **The GBuffer is written correctly.** Reading `gbuffer.header_tx` back
+   immediately after `manager->submit(gbuffer_ps_, render_view)`:
+
+   ```
+   header_tx 200x200 layers=2 nonzero=4175/80000 max=0x1000031
+   ```
+
+   4175 non-zero texels is the cube's screen area, with real closure bits. So
+   this is **not** a GBuffer write failure, and the classify shader is being
+   handed valid input.
+
+2. **The `Eval.Light` pass is submitted with shaders bound.** Instrumented:
+   `closure_count_ = 2`, loop iterations 2, `eval_light_ps_.is_empty() == 0`,
+   64 submissions in one render.
+
+3. **But the eval fragment shader produces nothing, even unconditionally.** I
+   put an unconditional store at the very top of `light_eval_frag`, before any
+   branch:
+
+   ```glsl
+   const int2 texel = int2(frag_co.xy);
+   srt.write_radiance_direct(uchar(0), texel, float3(4.0f, 0.0f, 0.0f));
+   ```
+
+   and additionally forced `write_radiance_direct` to encode a constant
+   `float3(4, 0, 0)`. The cube stays exactly 0.0. Nothing turns red anywhere.
+
+   That holds with the stencil test bypassed (`DRW_STATE_STENCIL_EQUAL` â†’
+   `DRW_STATE_STENCIL_ALWAYS`) **and** with `DRW_STATE_DEPTH_LESS` removed
+   from that sub-pass, so neither early-fragment test explains it.
+
+So the pass is dispatched, the GBuffer feeding it is valid, and the fragment
+shader's `imageStore` into `direct_radiance_*_img` does not reach the screen.
+The remaining suspect I have not been able to exclude is **fragment-shader
+`imageStore` into these images silently not landing on this GPU**. That would
+fit every observation: the GBuffer is written through ordinary colour
+attachments and works; emission and `BLENDED` both output through colour
+attachments and work; only the deferred lighting result, which is written via
+`imageStore`, disappears. A dropped write is also not an API error, which is
+consistent with validation being clean.
+
+I have not proven that last step, and would welcome a pointer on how you would
+confirm or refute it.
+
+**A likely separate bug found on the way**
+
+`eevee_deferred_tile_classify.bsl.hh` selects its stencil path at **compile
+time**:
+
+```glsl
+#if defined(GPU_ARB_shader_stencil_export) || defined(GPU_METAL)
+  gl_FragStencilRefARB = closure_count | is_transmission;
+#else
+  /* per-bit fallback using `current_bit` */
+#endif
+```
+
+while `DeferredLayer::render()` selects its path at **runtime** on
+`GPU_stencil_export_support()`. On Metal those disagree: setting
+`GCaps.stencil_export_support = false` makes the host issue the per-bit
+fallback draws, but the shader still compiles the `gl_FragStencilRefARB` branch
+and ignores `current_bit`. The fallback is therefore unreachable on Metal, and
+anyone trying to test it (as I first did) gets a misleading result. Worth
+fixing independently of this bug.
+
 **Candidate causes ruled out**
 
 Each of these was tested by patching the source, rebuilding, and re-measuring,
@@ -62,15 +131,14 @@ not by reading code:
    `GPU_framebuffer_bind_ex` path runs changes nothing. Still 0.0.
 
 2. **Stencil export is not the cause.** `mtl_backend.mm` sets
-   `GCaps.stencil_export_support = true` unconditionally. I forced it false for
-   AMD/Intel on macOS, so `DEFERRED_TILE_CLASSIFY` takes the per-bit fallback
-   path (one full-screen pass per stencil bit) instead of the single-pass
-   shader-exported path. Still 0.0. I verified with a `printf` that the flag was
-   actually `0` at runtime, because an earlier attempt silently tested a stale
-   binary.
+   `GCaps.stencil_export_support = true` unconditionally. Forcing it false is
+   not sufficient on its own because of the compile-time/runtime mismatch noted
+   above, so I patched **both**: `GCaps.stencil_export_support = false` *and*
+   removed `GPU_METAL` from the shader's `#if`, so host and shader consistently
+   take the per-bit fallback. Still 0.0.
 
-   This one seems worth recording, since "*Ok this points to the stencil
-   classify shader!*" implies the export mechanism, and swapping it out changes
+   This is worth recording, since "*Ok this points to the stencil classify
+   shader!*" implies the export mechanism, and replacing it end to end changes
    nothing.
 
 3. **The known Metal caveats are not the cause.**
