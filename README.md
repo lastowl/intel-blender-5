@@ -357,8 +357,45 @@ The dependency stack does fit comfortably on real hardware: roughly 2 hours of
 wall time across the four attempts, against the 7–8 hours CI needed to not
 even finish.
 
+**Blender 5.2.0 builds and runs against the self-built stack**
+
+Built natively on the Intel Mac, `Blender 5.2.0 LTS`, `x86_64`, minimum macOS
+11.2, 967 MB bundle. Tested, not merely linked:
+
+| Check | Result |
+| --- | --- |
+| `--version` | `Blender 5.2.0 LTS`, `x86_64` |
+| Python | 3.13.13 |
+| `numpy` / `zstandard` import | 2.3.4 / 0.25.0 |
+| Cycles CPU render **with OSL on** | 160×160×16spp in 1.4 s, correct image |
+| ffmpeg H.264 encode | valid MP4 written |
+| `WITH_CODEC_FFMPEG` / `WITH_CODEC_SNDFILE` | both **ON** |
+
+The OSL render is the meaningful one: `shading_system = True` drives the LLVM
+built in the dependency stack, so it exercises the longest pole end to end.
+ffmpeg and sndfile being on is the concrete payoff over the frozen-library
+route, which has to disable both.
+
+One fix was needed in `build-blender-x64.sh`. Blender only defaults
+`CMAKE_INSTALL_PREFIX` to the executable output directory inside
+`if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)`, which holds only on the
+first configure of a fresh cache. An earlier configure that failed for an
+unrelated reason leaves `/usr/local` in the cache, and the override never fires
+again — so `ninja install` tries to assemble the bundle in `/usr/local`. The
+script now passes the prefix explicitly, which is idempotent and picks the same
+value Blender would have.
+
 **Not yet done**
 
-* A complete 5.2 build against a self-built dependency stack — no CI run has
-  reached the Blender job yet, so that half of the workflow is still untested.
-* GPU acceleration. Not started; the build has to land first.
+* **Viewport GPU acceleration is unconfirmed.** Cycles reports no Metal
+  devices, exactly as predicted — `get_usable_devices()` filters out non-Apple
+  GPUs, so `METAL: []` and rendering falls back to CPU. That is the *Cycles*
+  subsystem. The EEVEE/viewport Metal backend is independent and still supports
+  AMD and Intel, but confirming it needs an interactive launch on the real GPU;
+  a background build cannot answer it. Do this before attempting the Cycles
+  revert.
+* The Cycles AMD/Intel revert (12 files, 22 conflict blocks).
+* Nothing is code-signed. `package-dmg.sh` produces an unsigned image and
+  documents `xattr -cr` as the workaround.
+* CI has still never run the Blender job; that half of the workflow remains
+  untested on a runner.

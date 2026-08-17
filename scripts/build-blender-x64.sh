@@ -54,6 +54,21 @@ echo
 # makes the compiler emit x86_64; do not wrap this in `arch -x86_64`, because
 # Homebrew's cmake is arm64-only and cannot execute under it.
 # shellcheck disable=SC2086
+# CMAKE_INSTALL_PREFIX is set explicitly rather than left to Blender. Blender
+# defaults it to the executable output directory, but only inside
+# `if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)`, which is true only on the
+# first configure of a fresh cache. Any earlier configure that failed for an
+# unrelated reason still leaves CMAKE_INSTALL_PREFIX=/usr/local in the cache,
+# and on the next run Blender's override no longer fires -- so `ninja install`
+# tries to assemble the bundle in /usr/local instead of bin/:
+#
+#   CMake Error at source/creator/cmake_install.cmake:41 (file):
+#     file INSTALL cannot make directory
+#     "/usr/local/Blender.app/Contents/Resources/5.2/scripts"
+#
+# Passing it every time makes the build idempotent, and the value is the same
+# one Blender would have chosen.
+# shellcheck disable=SC2086
 cmake \
   -S "$BLENDER_SRC" \
   -B "$BUILD_DIR" \
@@ -61,6 +76,7 @@ cmake \
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
   -DCMAKE_OSX_ARCHITECTURES=x86_64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+  -DCMAKE_INSTALL_PREFIX="$BUILD_DIR/bin" \
   -DLIBDIR="$LIBDIR" \
   $EXTRA_CMAKE_ARGS
 
