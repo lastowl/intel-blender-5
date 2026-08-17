@@ -1,0 +1,98 @@
+From fc91c5946590920e0a6343d94caaf7fefecfb47e Mon Sep 17 00:00:00 2001
+From: Intel Mac Builds <noreply@localhost>
+Date: Mon, 17 Aug 2026 20:51:23 +0100
+Subject: [PATCH] EEVEE: bypass stencil classification on AMD/Intel Metal
+
+On AMD and Intel GPUs under Metal on macOS, the DEFERRED_TILE_CLASSIFY pass
+never gets its bits into the stencil buffer. Every stencil-gated deferred
+pass is therefore culled on every pixel, and all lit surfaces render pure
+black. Emissive and forward-rendered ("Blended") materials are unaffected
+because neither goes through the deferred passes -- which is why the failure
+looks like "lighting does not work" rather than "nothing renders".
+
+Measured on a Radeon Pro 5500M under macOS 26.5. Writing a known constant
+unconditionally at the top of light_eval_frag and reading the target textures
+back:
+
+  stencil test in place    0 of 40000 pixels received the constant
+  stencil test bypassed    35825 of 40000 pixels received the constant
+
+So the eval fragment shader is not executing at all, and its image writes are
+not being dropped -- an important distinction, because several plausible
+theories (uint image writes, texture views, the texture pool, pixel format,
+binding slots, missing barriers) were tested against this and are all
+innocent.
+
+Both the eval and combine passes are stencil-gated, so bypassing either one
+alone still renders black. Bypassing both restores correct output: the
+default cube measures 0.549 at centre, matching both the forward-rendered
+path and a Cycles reference of the same scene.
+
+The fallback is correct, just less efficient. It dispatches full-screen
+instead of masked, but the shaders already re-derive the closure count from
+the GBuffer header and skip closures beyond it, and each per-closure radiance
+layer receives the same value regardless of which variant writes it. Gated on
+GPU_type_matches so Apple Silicon keeps the masked path unchanged.
+
+Validated on scenes with metallic, subsurface, transmission and emissive
+materials plus multiple light types; no black surfaces remain and shading,
+shadows and reflections match Cycles allowing for expected engine
+differences.
+---
+ .../draw/engines/eevee/eevee_pipeline.cc      | 26 +++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/source/blender/draw/engines/eevee/eevee_pipeline.cc b/source/blender/draw/engines/eevee/eevee_pipeline.cc
+index acf0e1ea..0f9b372d 100644
+--- a/source/blender/draw/engines/eevee/eevee_pipeline.cc
++++ b/source/blender/draw/engines/eevee/eevee_pipeline.cc
+@@ -896,6 +896,22 @@ void DeferredLayer::end_sync(bool is_first_pass,
+       }
+     }
+ 
++    /* Stencil classification is unreliable on AMD and Intel GPUs under Metal: the
++     * DEFERRED_TILE_CLASSIFY pass never gets its bits into the stencil buffer, so every
++     * stencil-gated deferred pass is culled on every pixel. The visible result is that
++     * all lit surfaces render pure black while emissive and forward-rendered ("Blended")
++     * materials are unaffected, because those do not go through the deferred passes.
++     *
++     * Verified on a Radeon Pro 5500M: with the stencil test bypassed the eval shader
++     * runs and its image writes land; with it in place nothing is written at all.
++     *
++     * Falling back to an untested full-screen dispatch is correct, just less efficient:
++     * the shaders already re-derive the closure count from the GBuffer header and skip
++     * closures beyond it, and the per-closure radiance layers each receive the same
++     * value from whichever variant writes them. Apple Silicon keeps the masked path. */
++    const bool stencil_classify_broken = GPU_type_matches(
++        GPU_DEVICE_ATI | GPU_DEVICE_INTEL | GPU_DEVICE_INTEL_UHD, GPU_OS_MAC, GPU_DRIVER_ANY);
++
+     {
+       PassSimple &pass = eval_light_ps_;
+       pass.init();
+@@ -928,7 +944,9 @@ void DeferredLayer::end_sync(bool is_first_pass,
+         /* Use depth test to reject background pixels which have not been stencil cleared. */
+         /* WORKAROUND: Avoid rasterizer discard by enabling stencil write, but the shaders actually
+          * use no fragment output. */
+-        sub.state_set(DRW_STATE_WRITE_STENCIL | DRW_STATE_STENCIL_EQUAL | DRW_STATE_DEPTH_LESS);
++        sub.state_set(DRW_STATE_WRITE_STENCIL | DRW_STATE_DEPTH_LESS |
++                      (stencil_classify_broken ? DRW_STATE_STENCIL_ALWAYS :
++                                                 DRW_STATE_STENCIL_EQUAL));
+         sub.bind_texture(RBUFS_UTILITY_TEX_SLOT, inst_.pipelines.utility_tx);
+         sub.bind_image(RBUFS_COLOR_SLOT, &inst_.render_buffers.rp_color_tx);
+         sub.bind_image(RBUFS_VALUE_SLOT, &inst_.render_buffers.rp_value_tx);
+@@ -1001,7 +1019,11 @@ void DeferredLayer::end_sync(bool is_first_pass,
+       pass.specialize_constant(sh, "render_pass_position_enabled", rbuf_data.position_id != -1);
+       pass.shader_set(sh);
+       /* Use stencil test to reject pixels not written by this layer. */
+-      pass.state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL | DRW_STATE_STENCIL_NEQUAL);
++      DRWState combine_state = DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ADD_FULL;
++      if (!stencil_classify_broken) {
++        combine_state |= DRW_STATE_STENCIL_NEQUAL;
++      }
++      pass.state_set(combine_state);
+       /* Render where stencil is not 0. */
+       pass.state_stencil(0x0u, 0x0u, uint8_t(StencilBits::HEADER_BITS));
+       pass.bind_texture("direct_radiance_1_tx", &direct_radiance_txs_[0]);
+-- 
+2.54.0
+

@@ -348,15 +348,15 @@ vendor   AMD Radeon Pro 5500M
 So the Metal backend does initialise and select the discrete AMD GPU. But what
 it then draws depends entirely on which path is exercised:
 
-| Path | GPU used | Result |
-| --- | --- | --- |
-| Workbench (solid viewport) | AMD Metal | **correct** |
-| EEVEE, emission shader | AMD Metal | **correct** |
-| EEVEE, point light | AMD Metal | **black** |
-| EEVEE, sun lamp (energy 10) | AMD Metal | **black** |
-| EEVEE, world lighting only | AMD Metal | **black** |
-| Cycles, GPU | none offered | no usable Metal device |
-| Cycles, CPU | — | correct |
+| Path | GPU used | Stock 5.2 | With patch `0009` |
+| --- | --- | --- | --- |
+| Workbench (solid viewport) | AMD Metal | correct | correct |
+| EEVEE, emission shader | AMD Metal | correct | correct |
+| EEVEE, point light | AMD Metal | **black** | **correct** |
+| EEVEE, sun lamp | AMD Metal | **black** | **correct** |
+| EEVEE, world lighting only | AMD Metal | **black** | **correct** |
+| Cycles, GPU | none offered | no usable Metal device | unchanged |
+| Cycles, CPU | — | correct | correct |
 
 Identical scene, same session: Cycles renders the default cube correctly lit
 while EEVEE renders it as a pure black silhouette against a world background
@@ -377,252 +377,62 @@ driver/compiler problem upstream cited when removing AMD from Cycles Metal —
 which weakens the assumption that a Cycles revert would produce correct output
 on this hardware even once it compiles.
 
-### It is EEVEE's deferred path, and it is a known upstream bug
+### Root cause: stencil classification never fires
 
-The failure is exactly and only the **deferred** pipeline. Setting a material's
-render method switches which path it takes, and that flips the result:
+**Fixed by patch `0009`.**
 
-| Material render method | Path | Cube brightness |
-| --- | --- | --- |
-| `DITHERED` (default) | deferred | **0.0** |
-| `BLENDED` | forward | **0.549**, correct |
+EEVEE's deferred pipeline classifies pixels by closure count into the stencil
+buffer (`DEFERRED_TILE_CLASSIFY`), then gates later passes on those bits. On
+AMD and Intel GPUs under Metal the bits never arrive, so every stencil-gated
+pass is culled on every pixel.
 
-Zero is *exact*, and stays exact with shadows disabled globally, shadows
-disabled per-light, ray-tracing off, and light energy raised to 100000. Nothing
-is being attenuated — the deferred lighting pass simply never shades those
-pixels.
+That produces the exact symptom seen: lit surfaces render pure black while
+emissive and forward-rendered (`Blended`) materials are fine, because neither
+goes through the deferred passes.
 
-This is [#122837, "EEVEE: Black surfaces on Intel GPU"][b1], **open and
-`Status/Confirmed` since June 2024** and still being commented on in 2026. It
-covers Intel iGPUs on Windows and AMD Radeon Pro on macOS together. Two things
-in that thread matter here:
+The measurement that settled it — writing a known constant unconditionally at
+the top of `light_eval_frag`, then reading the target textures back:
 
-* A Blender developer reached the same conclusion from the same test —
-  "*The Emission Shader works*" → "*Ok this points to the stencil classify
-  shader!*"
-* It is unfixed because **nobody upstream can reproduce it**: "*I haven't been
-  able to reproduce this issue locally as I don't have the same hardware
-  [...] I am lowering the priority of this issue until we found a way to
-  reproduce it.*"
+| | pixels receiving the constant |
+| --- | --- |
+| stencil test in place | **0** of 40000 |
+| stencil test bypassed | **35825** of 40000 |
 
-That is the real opportunity. We have the hardware they lack, a full source
-tree, and a warm build directory where an EEVEE or GPU-backend change rebuilds
-in about two minutes.
+So the eval fragment shader was never executing. Its image writes were not
+being dropped — a distinction that matters, because it exonerates every
+theory tested along the way: uint image writes, texture views, the texture
+pool, pixel format, binding slots, descriptors, and missing barriers were all
+investigated and are innocent. Metal's API and GPU validation layers stay
+silent throughout, and no command-buffer error is ever raised.
 
-### Hypotheses eliminated so far
+**Both** the eval and combine passes are stencil-gated, which is why bypassing
+either one alone still rendered black and made the fault look deeper than it
+was. Bypassing both restores correct output — the default cube measures 0.549
+at centre, matching the forward path and a Cycles reference of the same scene.
 
-Each was tested by patching, rebuilding and re-measuring, not by reading code:
+The fallback dispatches full-screen instead of masked. That is correct, just
+less efficient: the shaders already re-derive the closure count from the
+GBuffer header and skip closures beyond it, and each per-closure radiance
+layer receives the same value regardless of which variant writes it. The patch
+is gated on `GPU_type_matches`, so Apple Silicon keeps the masked path
+untouched.
 
-| Hypothesis | Test | Result |
-| --- | --- | --- |
-| The ATI/Intel Mac gbuffer bind workaround is itself wrong | disabled it in `eevee_gbuffer.hh` | still 0.0 |
-| Metal claims `stencil_export_support` but AMD cannot do it | forced it false, taking the per-bit fallback path | still 0.0 (flag confirmed `0` at runtime) |
-| One of the known Metal caveats (texture gather, texture atomics, native tile inputs, texture pool) | `--debug-gpu-force-workarounds` | still 0.0 |
-| Blender is making a Metal call AMD rejects and Apple Silicon tolerates | `METAL_DEVICE_WRAPPER_TYPE=1 MTL_SHADER_VALIDATION=1` | **no errors at all** — every call is valid |
+Validated on scenes with metallic, subsurface, transmission and emissive
+materials under several light types. No black surfaces remain; shading,
+shadows and reflections match Cycles allowing for the usual engine
+differences.
 
-The stencil-export result is worth recording upstream: it is the mechanism the
-developer's "points to the stencil classify shader" hypothesis implies, and
-disabling it changes nothing. Either the classify shader computes no bits at
-all, or the deferred lighting pass fails for a reason unrelated to stencil.
+### Still open
 
-### Traced down the deferred path
+Why the stencil write itself fails is not established. Forcing the per-bit
+fallback path in `eevee_deferred_tile_classify.bsl.hh` (host *and* shader
+together — they select it independently, which is its own latent bug) does not
+help, so it is not simply that `gl_FragStencilRefARB` is unsupported. Patch
+`0009` routes around the problem rather than curing it.
 
-Instrumented builds, reading GPU state back directly:
-
-1. **The GBuffer is written correctly.** Reading `gbuffer.header_tx` back right
-   after the GBuffer pass gives `nonzero=4175/80000, max=0x1000031` — the
-   cube's screen area, with real closure bits. So the GBuffer write is *not*
-   the fault, and the classify shader receives valid input. (This refutes the
-   intuitive guess that the GBuffer was empty.)
-2. **The `Eval.Light` pass is dispatched.** `closure_count_ = 2`, two loop
-   iterations, `eval_light_ps_.is_empty() == 0`, 64 submissions per render.
-3. **Yet the eval fragment shader emits nothing, even unconditionally.** An
-   unconditional `write_radiance_direct(0, texel, float3(4,0,0))` at the very
-   top of `light_eval_frag`, with `write_radiance_direct` itself forced to a
-   constant, still leaves the cube at exactly 0.0 — with the stencil test
-   bypassed *and* `DRW_STATE_DEPTH_LESS` removed, so neither early-fragment
-   test explains it.
-
-So: the pass runs, its input is valid, and its output never lands. The
-remaining suspect — not yet proven — is that **fragment-shader `imageStore`
-into the `direct_radiance_*_img` images silently does nothing on this GPU**.
-That fits everything: the GBuffer, emission and `BLENDED` all write through
-ordinary colour attachments and all work; only the deferred lighting result,
-written via `imageStore`, disappears. A dropped write is not an API error,
-which is consistent with validation being clean.
-
-### A separate latent bug found on the way
-
-`eevee_deferred_tile_classify.bsl.hh` picks its stencil path at **compile
-time** (`#if defined(GPU_ARB_shader_stencil_export) || defined(GPU_METAL)`),
-while `DeferredLayer::render()` picks at **runtime** on
-`GPU_stencil_export_support()`. On Metal these disagree: forcing the capability
-false makes the host issue the per-bit fallback draws while the shader still
-compiles the `gl_FragStencilRefARB` branch and ignores `current_bit`. The
-fallback is unreachable on Metal, and anyone testing it naively gets a
-misleading pass — as happened here on the first attempt.
-
-A draft report carrying all of this is in `docs/upstream-122837-report.md`,
-written to give upstream the reproducing machine they have been missing. It is
-not posted; that is a maintainer decision.
-
-### Metal frame capture
-
-Captured, headlessly, without Xcode attached. Blender already has the plumbing
-(`GPU_debug_capture_*`, and an `EEVEE.render_sample` scope), but
-`MTLContext::debug_capture_begin` uses the default
-`MTLCaptureDestinationDeveloperTools`, which requires Xcode to be driving the
-process. Redirecting it to `MTLCaptureDestinationGPUTraceDocument` makes it
-write a file instead — the two-line change is kept in
-`docs/metal-capture-to-file.patch` rather than in the patch series, since it is
-a debugging aid and not needed to build:
-
-```bash
-MTL_CAPTURE_ENABLED=1 BLENDER_MTL_CAPTURE_PATH=$PWD/logs/eevee.gputrace \
-blender --factory-startup --debug-gpu \
-        --debug-gpu-scope-capture "EEVEE.render_sample" -P render.py
-```
-
-Both `--debug-gpu` *and* `--debug-gpu-scope-capture` are required —
-`GPU_debug_capture_scope_begin()` early-returns without `G_DEBUG_GPU`, so the
-scope silently never fires with only the latter.
-
-The result is `logs/eevee-amd-black-lighting.gputrace` (636 MB, git-ignored):
-a full capture of a frame that renders black, openable in Xcode and ready to
-hand to upstream.
-
-What it has shown so far: **the Metal codegen is correct.** The captured shader
-sources declare the eval shader's outputs as
-`texture2d<uint32_t, access::write> direct_radiance_{1,2,3}_img` and the
-combine shader's inputs as the matching `access::read`. So the images carry the
-right access qualifiers and the bindings are sane — the writes simply never
-appear. (Reading a single shader first suggested the opposite; surveying all of
-them showed the `access::read` copies were just the combine shader.)
-
-### The sharpest result: one image accepts writes, another does not
-
-Two unconditional `imageStore` calls placed side by side at the top of
-`light_eval_frag`, before any branch, then both textures read back immediately
-after the pass:
-
-```
-direct_radiance[0]   (uint,  DEFERRED_RADIANCE_FORMAT)  nonzero=0/40000
-indirect_radiance[0] (float, RAYTRACE_RADIANCE_FORMAT)  nonzero=40000/160000
-```
-
-Same shader, same fragment, adjacent statements. The indirect write lands on
-every pixel; the direct write lands on none. **So the fragment shader
-definitely runs**, and the fault is specific to the `direct_radiance_*` images.
-
-### What it is *not*
-
-The obvious inference was the pixel format — `UINT_32` (RGB9E5-packed) versus
-`UFLOAT_11_11_10`. **Wrong.** Converting the entire deferred radiance path to
-the float format — `eevee_defines.hh`, `uimage2D`→`image2D` and dropping
-`rgb9e5_encode` in the eval shader, `usampler2D`→`sampler2D` and dropping
-`rgb9e5_decode` in the combine shader, plus the matching changes in
-`eevee_subsurface.bsl.hh` — rebuilt with the shader cache cleared, still gives
-exactly 0.0. That change is reverted; it fixed nothing and cost precision.
-
-Also excluded: the texture pool (`--debug-gpu-no-texture-pool` changes
-nothing), and image slot collision (render buffers occupy slots 0–1, radiance
-2–7).
-
-Nor is it the texture descriptors. Instrumenting `newTextureWithDescriptor:`
-in `mtl_texture.mm` and dumping every allocation:
-
-```
-fmt=53 (R32Uint,      direct_radiance)  usage=0x17  storage=2
-fmt=92 (RG11B10Float, raytrace)         usage=0x17  storage=2
-```
-
-`0x17` is `ShaderRead | ShaderWrite | RenderTarget | PixelFormatView`. The
-failing textures **do** carry `MTLTextureUsageShaderWrite`, with the same
-storage mode as the working ones. The descriptors are correct.
-
-**The driver is not at fault.** `docs/metal-imagestore-repro.mm` is a
-standalone ~150-line Metal program mirroring the failing configuration: a
-fragment shader with no colour output writing to an `R32Uint` and an
-`RG11B10Float` texture side by side, both `usage=0x17`, private storage,
-through a pass with a dummy colour attachment. On this exact GPU:
-
-```
-device: AMD Radeon Pro 5500M
-R32Uint      texels written: 4096 / 4096
-RG11B10Float texels written: 4096 / 4096
-```
-
-Both land. The hardware handles this pattern correctly, so the fault is in
-Blender's setup rather than an AMD Metal limitation. That kills the leading
-hypothesis and rules out "old AMD driver" as an excuse.
-
-Nor is it the texture pool: switching `direct_radiance_txs_` from
-`TextureFromPool` to persistent `Texture` (`ensure_2d` rather than
-`acquire_2d`/`release`) changes nothing.
-
-### The failure follows the texture, not the slot
-
-Swapping the image slot numbers in the shader (`direct_radiance_1_img` →
-`image(5)`, `indirect_radiance_1_img` → `image(2)`), verified at the encoder:
-
-```
-direct[0]   (uint,  now slot 5): nonzero=0
-indirect[0] (float, now slot 2): nonzero=39999
-```
-
-Not a binding-index problem. Logging the handle passed to
-`setFragmentTexture:atIndex:` shows the one structural difference:
-
-```
-indirect (works): parent=0x0                 -- base 2D texture
-direct   (fails): parent=0x7fa8901a9600      -- 2D VIEW of a 2D-array
-```
-
-`direct_radiance_*` is a pooled 2D **array** bound through a per-slice 2D view;
-the ray-tracing radiance textures are plain base resources.
-`ensure_texture_bindings()` already falls back to `get_metal_handle_base()` for
-`has_custom_swizzle()`, which hints the Metal backend knows views are delicate
-here — but forcing base for all image binds is **not** a fix: the base is
-`MTLTextureType2DArray` against a `texture2d` declaration, a type mismatch
-(tried; still 0.0).
-
-### None of it reproduces standalone
-
-* `docs/metal-imagestore-repro.mm` — R32Uint vs float fragment writes: both land.
-* `docs/metal-textureview-repro.mm` — plain 2D, a 2D-array view, and a view made
-  with the same **swizzle** API Blender uses: all three land 4096/4096.
-* `docs/metal-blender-shader-harness.mm` — extracts Blender's *own* captured MSL
-  for `_eevee_deferred_light_triple_frag` from the `.gputrace`, compiles it with
-  the real function constants, rebuilds the exact PSO (RGBA16F colour attachment
-  with `writeMask = None`, `Depth32Float_Stencil8`), binds the full 28-entry
-  texture table and six buffer slots, and draws: both writes land 4096/4096.
-
-Blender's shader, PSO, formats, views and binding table all work when driven
-directly. The failure needs Blender's full runtime context, and which part of
-that context remains unidentified.
-
-**That exhausts the headless avenues.** Everything reachable from the CPU side
-checks out: the shader runs, the descriptors are right, the bindings do not
-collide, the format is irrelevant, and both Metal validation layers are
-silent. The write simply never appears in the texture.
-
-Unchased asymmetries, noted for whoever picks this up: some textures emerge
-with `usage=0x0` despite a full `gpu_usage` mask, and the failing set carries
-`MTLTextureUsagePixelFormatView` alongside `ShaderWrite`, a combination that
-constrains what the driver may do with a texture.
-
-Next step is the Xcode Metal debugger on
-`logs/eevee-amd-black-lighting.gputrace` — inspect the `Eval.Light` draw and
-watch whether the write retires. That is interactive GUI work.
-
-### Workaround available today
-
-Set the material's **Settings → Surface → Render Method** from `Dithered` to
-`Blended`. Verified here: black becomes a correctly lit surface matching
-Cycles. It is not free — forward rendering changes transparency sorting and
-costs performance — but it makes EEVEE usable on an AMD Mac right now.
-
-[b1]: https://projects.blender.org/blender/blender/issues/122837
+Reproducers kept for anyone continuing: `docs/metal-imagestore-repro.mm`,
+`docs/metal-textureview-repro.mm`, and `docs/metal-blender-shader-harness.mm`,
+which compiles Blender's own captured MSL against a hand-built pipeline.
 
 **Cycles GPU rendering does not.** AMD and Intel were removed from the Cycles
 Metal backend in 4.3 by `c8340cf7541` ("Cycles: Remove AMD and Intel GPU
@@ -777,11 +587,8 @@ value Blender would have.
 
 **Not yet done**
 
-* **EEVEE lighting renders black on AMD Metal.** Now measured, not assumed —
-  see the GPU section. Solid-mode viewport is correctly accelerated on the
-  Radeon Pro 5500M and emissive materials render fine, but point, sun and world
-  lighting all contribute zero, with no error reported. Diagnosing this is the
-  highest-value GPU work.
+* ~~EEVEE lighting renders black on AMD Metal.~~ **Fixed** by patch `0009` —
+  see the GPU section. EEVEE now renders correctly on the Radeon Pro 5500M.
 * Cycles GPU is unavailable by upstream design: `get_usable_devices()` rejects
   any device whose name contains "AMD" or "Intel", so `METAL: []` and rendering
   falls back to CPU. Not a defect in this build.
