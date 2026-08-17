@@ -99,6 +99,28 @@ consistent with validation being clean.
 I have not proven that last step, and would welcome a pointer on how you would
 confirm or refute it.
 
+**I have a Metal frame capture of the failing frame**
+
+Captured headlessly (no Xcode attached) with a two-line change to
+`MTLContext::debug_capture_begin` to send the capture to a
+`MTLCaptureDestinationGPUTraceDocument` instead of the default
+`MTLCaptureDestinationDeveloperTools`:
+
+```
+MTL_CAPTURE_ENABLED=1 BLENDER_MTL_CAPTURE_PATH=/path/eevee.gputrace \
+blender --factory-startup --debug-gpu \
+        --debug-gpu-scope-capture "EEVEE.render_sample" -P render.py
+```
+
+That yields a 636 MB `.gputrace` of the frame that renders black. I can upload
+it or run queries against it — say the word.
+
+From the captured shader sources I can confirm the Metal codegen is **not** the
+problem: the eval shader declares its outputs correctly as
+`texture2d<uint32_t, access::write> direct_radiance_{1,2,3}_img`, and the
+combine shader declares the matching `access::read` versions. So the images are
+bound with the right access qualifiers; the writes simply do not appear.
+
 **A likely separate bug found on the way**
 
 `eevee_deferred_tile_classify.bsl.hh` selects its stencil path at **compile

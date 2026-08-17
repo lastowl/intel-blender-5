@@ -466,8 +466,42 @@ A draft report carrying all of this is in `docs/upstream-122837-report.md`,
 written to give upstream the reproducing machine they have been missing. It is
 not posted; that is a maintainer decision.
 
-Remaining avenue: a Metal frame capture from Xcode to confirm or refute the
-`imageStore` hypothesis directly.
+### Metal frame capture
+
+Captured, headlessly, without Xcode attached. Blender already has the plumbing
+(`GPU_debug_capture_*`, and an `EEVEE.render_sample` scope), but
+`MTLContext::debug_capture_begin` uses the default
+`MTLCaptureDestinationDeveloperTools`, which requires Xcode to be driving the
+process. Redirecting it to `MTLCaptureDestinationGPUTraceDocument` makes it
+write a file instead — the two-line change is kept in
+`docs/metal-capture-to-file.patch` rather than in the patch series, since it is
+a debugging aid and not needed to build:
+
+```bash
+MTL_CAPTURE_ENABLED=1 BLENDER_MTL_CAPTURE_PATH=$PWD/logs/eevee.gputrace \
+blender --factory-startup --debug-gpu \
+        --debug-gpu-scope-capture "EEVEE.render_sample" -P render.py
+```
+
+Both `--debug-gpu` *and* `--debug-gpu-scope-capture` are required —
+`GPU_debug_capture_scope_begin()` early-returns without `G_DEBUG_GPU`, so the
+scope silently never fires with only the latter.
+
+The result is `logs/eevee-amd-black-lighting.gputrace` (636 MB, git-ignored):
+a full capture of a frame that renders black, openable in Xcode and ready to
+hand to upstream.
+
+What it has shown so far: **the Metal codegen is correct.** The captured shader
+sources declare the eval shader's outputs as
+`texture2d<uint32_t, access::write> direct_radiance_{1,2,3}_img` and the
+combine shader's inputs as the matching `access::read`. So the images carry the
+right access qualifiers and the bindings are sane — the writes simply never
+appear. (Reading a single shader first suggested the opposite; surveying all of
+them showed the `access::read` copies were just the combine shader.)
+
+Remaining avenue: open the trace in Xcode's Metal debugger and step the
+`Eval.Light` draw to inspect the bound image contents and the actual
+per-fragment writes.
 
 ### Workaround available today
 

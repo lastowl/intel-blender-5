@@ -1,0 +1,26 @@
+diff --git a/source/blender/gpu/metal/mtl_debug.mm b/source/blender/gpu/metal/mtl_debug.mm
+index 138aed4e..622792be 100644
+--- a/source/blender/gpu/metal/mtl_debug.mm
++++ b/source/blender/gpu/metal/mtl_debug.mm
+@@ -131,6 +131,21 @@ bool MTLContext::debug_capture_begin(const char * /*title*/)
+   }
+   MTLCaptureDescriptor *capture_descriptor = [[MTLCaptureDescriptor alloc] init];
+   capture_descriptor.captureObject = this->device;
++  /* XXDBG: capture to a .gputrace document so this works without Xcode attached. */
++  const char *xxdbg_out = getenv("BLENDER_MTL_CAPTURE_PATH");
++  if (xxdbg_out != nullptr) {
++    if ([capture_manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
++      capture_descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
++      capture_descriptor.outputURL = [NSURL
++          fileURLWithPath:[NSString stringWithUTF8String:xxdbg_out]];
++      printf("XXDBG capturing to %s\n", xxdbg_out);
++      fflush(stdout);
++    }
++    else {
++      printf("XXDBG GPUTraceDocument destination NOT supported\n");
++      fflush(stdout);
++    }
++  }
+   NSError *error;
+   if (![capture_manager startCaptureWithDescriptor:capture_descriptor error:&error]) {
+     NSLog(@"Failed to start Metal frame capture, error %@", error);
