@@ -333,9 +333,53 @@ if (strstr(vendor, "AMD") || strstr(vendor, "Apple") || ...) { ... }
 if ((strstr(vendor, "Intel") || strstr(vendor, "INTEL"))) { ... }
 ```
 
-`WITH_METAL_BACKEND` is also already defined in our x86_64 build. So the
-viewport is expected to be GPU-accelerated out of the box — this needs
-confirming on real hardware, not asserting.
+`WITH_METAL_BACKEND` is also already defined in our x86_64 build, so the
+viewport was *expected* to be GPU-accelerated out of the box.
+
+**Measured on real hardware, that expectation is half right.** On a MacBook Pro
+with an AMD Radeon Pro 5500M (8 GB) and Intel UHD 630, Blender 5.2.0 x86_64
+reports:
+
+```
+backend  METAL
+vendor   AMD Radeon Pro 5500M
+```
+
+So the Metal backend does initialise and select the discrete AMD GPU. But what
+it then draws depends entirely on which path is exercised:
+
+| Path | GPU used | Result |
+| --- | --- | --- |
+| Workbench (solid viewport) | AMD Metal | **correct** |
+| EEVEE, emission shader | AMD Metal | **correct** |
+| EEVEE, point light | AMD Metal | **black** |
+| EEVEE, sun lamp (energy 10) | AMD Metal | **black** |
+| EEVEE, world lighting only | AMD Metal | **black** |
+| Cycles, GPU | none offered | no usable Metal device |
+| Cycles, CPU | — | correct |
+
+Identical scene, same session: Cycles renders the default cube correctly lit
+while EEVEE renders it as a pure black silhouette against a world background
+that *does* render. No shader compilation errors are emitted, and the render
+completes in normal time.
+
+The emission result is the informative one. Geometry, materials, shader
+compilation and rasterisation are all fine — an emissive cube renders bright
+and correct. What produces nothing is **light transport onto surfaces**: point,
+sun and world lighting all contribute zero. So this is not "the Metal backend
+is broken on AMD"; it is specifically EEVEE's lighting evaluation.
+
+The practical consequence: **solid-mode viewport work is GPU-accelerated and
+correct**, which is most of day-to-day modelling. EEVEE rendering and material
+preview are not usable, and Cycles is CPU-only. That is a materially different
+picture from "the viewport is fine", and it is exactly the class of
+driver/compiler problem upstream cited when removing AMD from Cycles Metal —
+which weakens the assumption that a Cycles revert would produce correct output
+on this hardware even once it compiles.
+
+Not yet investigated: whether this is a shadow-map path, a light-culling path,
+or a UBO/SSBO binding problem on AMD Metal; and whether interactive material
+preview behaves the same as an F12 render.
 
 **Cycles GPU rendering does not.** AMD and Intel were removed from the Cycles
 Metal backend in 4.3 by `c8340cf7541` ("Cycles: Remove AMD and Intel GPU
@@ -363,11 +407,20 @@ A trial `git revert c8340cf7541` onto `v5.2.0` gives a concrete size estimate:
 but every resolution is a judgement call that can only be validated on real AMD
 hardware.
 
-Order of work: confirm the viewport is already accelerated on real hardware
-first, since that is most of the day-to-day benefit and may cost nothing. Then
-attempt the Cycles revert as a separate, clearly-labelled patch that can be
-dropped if it proves unstable — it should never be a prerequisite for a
-working build.
+Order of work, revised now that the viewport has actually been measured:
+
+1. **Diagnose EEVEE's black lighting on AMD.** This is the highest-value item
+   and was not previously on the list, because the viewport was assumed fine.
+   It affects every AMD Mac, is reproducible in a two-line script, and unlike
+   the Cycles revert it is a bug hunt rather than a merge conflict.
+2. **Only then consider the Cycles revert.** The evidence above argues for
+   caution: EEVEE already demonstrates that lighting maths on this GPU can
+   silently produce zeros with no error. Resolving 22 conflict blocks to reach
+   a Cycles backend that renders black would be a poor trade. Establishing
+   *why* EEVEE's lighting fails would say a lot about whether Cycles can work
+   here at all.
+
+Solid-mode viewport acceleration already works and needs nothing.
 
 ## Status
 
@@ -481,14 +534,17 @@ value Blender would have.
 
 **Not yet done**
 
-* **Viewport GPU acceleration is unconfirmed.** Cycles reports no Metal
-  devices, exactly as predicted — `get_usable_devices()` filters out non-Apple
-  GPUs, so `METAL: []` and rendering falls back to CPU. That is the *Cycles*
-  subsystem. The EEVEE/viewport Metal backend is independent and still supports
-  AMD and Intel, but confirming it needs an interactive launch on the real GPU;
-  a background build cannot answer it. Do this before attempting the Cycles
-  revert.
-* The Cycles AMD/Intel revert (12 files, 22 conflict blocks).
+* **EEVEE lighting renders black on AMD Metal.** Now measured, not assumed —
+  see the GPU section. Solid-mode viewport is correctly accelerated on the
+  Radeon Pro 5500M and emissive materials render fine, but point, sun and world
+  lighting all contribute zero, with no error reported. Diagnosing this is the
+  highest-value GPU work.
+* Cycles GPU is unavailable by upstream design: `get_usable_devices()` rejects
+  any device whose name contains "AMD" or "Intel", so `METAL: []` and rendering
+  falls back to CPU. Not a defect in this build.
+* The Cycles AMD/Intel revert (12 files, 22 conflict blocks) — deferred behind
+  the EEVEE diagnosis, which is cheaper and informs whether the revert is even
+  worth attempting.
 * Nothing is code-signed. `package-dmg.sh` produces an unsigned image and
   documents `xattr -cr` as the workaround.
 * CI has still never run the Blender job; that half of the workflow remains
