@@ -422,6 +422,11 @@ materials under several light types. No black surfaces remain; shading,
 shadows and reflections match Cycles allowing for the usual engine
 differences.
 
+The **interactive viewport** is confirmed too, not just F12 renders: a 3D view
+set to Rendered shading displays correct lighting, shadows and materials on the
+Radeon Pro 5500M. That closes the question this README carried from the start —
+GPU acceleration on Intel Macs is real, and now usable.
+
 ### Still open
 
 Why the stencil write itself fails is not established. Forcing the per-bit
