@@ -137,6 +137,32 @@ failing textures **do** carry `MTLTextureUsageShaderWrite`, with the same
 storage mode as the ones that work. So the descriptors are correct and Metal
 should be accepting these writes.
 
+**The GPU driver is not at fault — I have a minimal Metal reproducer that
+does NOT reproduce**
+
+`docs/metal-imagestore-repro.mm` in my tree is a ~150-line standalone Metal
+program that mirrors the failing configuration as closely as I can:
+a fragment shader with no colour output writing via `texture.write()` to an
+`R32Uint` texture and an `RG11B10Float` texture bound side by side, both with
+`usage = ShaderRead | ShaderWrite | RenderTarget | PixelFormatView` (0x17) and
+`MTLStorageModePrivate`, rendered through a pass with a dummy colour
+attachment.
+
+```
+device: AMD Radeon Pro 5500M
+R32Uint      texels written: 4096 / 4096
+RG11B10Float texels written: 4096 / 4096
+```
+
+Both land, fully. So this GPU and driver handle exactly this pattern
+correctly, and **whatever breaks in EEVEE is on Blender's side**, not a driver
+limitation. I think that is the single most useful thing in this report: it
+removes "old AMD driver" as an explanation.
+
+Nor is it the texture pool. Changing `direct_radiance_txs_` from
+`TextureFromPool` to plain persistent `Texture` (with `ensure_2d` instead of
+`acquire_2d`/`release`) changes nothing — still exactly 0.0.
+
 At that point I am out of headless ideas. Everything I can reach from the CPU
 side looks right: the shader runs, the descriptors are right, the bindings do
 not collide, the format is irrelevant, and validation is silent. The write

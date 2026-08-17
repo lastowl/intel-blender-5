@@ -540,6 +540,26 @@ fmt=92 (RG11B10Float, raytrace)         usage=0x17  storage=2
 failing textures **do** carry `MTLTextureUsageShaderWrite`, with the same
 storage mode as the working ones. The descriptors are correct.
 
+**The driver is not at fault.** `docs/metal-imagestore-repro.mm` is a
+standalone ~150-line Metal program mirroring the failing configuration: a
+fragment shader with no colour output writing to an `R32Uint` and an
+`RG11B10Float` texture side by side, both `usage=0x17`, private storage,
+through a pass with a dummy colour attachment. On this exact GPU:
+
+```
+device: AMD Radeon Pro 5500M
+R32Uint      texels written: 4096 / 4096
+RG11B10Float texels written: 4096 / 4096
+```
+
+Both land. The hardware handles this pattern correctly, so the fault is in
+Blender's setup rather than an AMD Metal limitation. That kills the leading
+hypothesis and rules out "old AMD driver" as an excuse.
+
+Nor is it the texture pool: switching `direct_radiance_txs_` from
+`TextureFromPool` to persistent `Texture` (`ensure_2d` rather than
+`acquire_2d`/`release`) changes nothing.
+
 **That exhausts the headless avenues.** Everything reachable from the CPU side
 checks out: the shader runs, the descriptors are right, the bindings do not
 collide, the format is irrelevant, and both Metal validation layers are
