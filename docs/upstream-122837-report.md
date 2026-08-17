@@ -124,12 +124,32 @@ Nor is it the texture pool: `--debug-gpu-no-texture-pool` changes nothing. Nor
 is it an image binding slot collision — the render-buffer images occupy slots 0
 and 1, the radiance images 2–7.
 
-So the remaining difference between an image that accepts writes and one that
-does not, from the same shader, is **how `direct_radiance_txs_` are allocated
-and bound** (`TextureFromPool::acquire_2d(..., usage_read | usage_write)` in
-`DeferredLayer::render()`) versus the raytracing-owned
-`indirect_result_.closures[]`. I have not found what about that differs in a
-way this GPU cares about, and would value a pointer.
+Nor is it the texture descriptors. I instrumented
+`newTextureWithDescriptor:` in `mtl_texture.mm` and dumped every allocation:
+
+```
+fmt=53 (R32Uint,      direct_radiance)  usage=0x17  storage=2
+fmt=92 (RG11B10Float, raytrace)         usage=0x17  storage=2   (and 0x7)
+```
+
+`0x17` is `ShaderRead | ShaderWrite | RenderTarget | PixelFormatView`. The
+failing textures **do** carry `MTLTextureUsageShaderWrite`, with the same
+storage mode as the ones that work. So the descriptors are correct and Metal
+should be accepting these writes.
+
+At that point I am out of headless ideas. Everything I can reach from the CPU
+side looks right: the shader runs, the descriptors are right, the bindings do
+not collide, the format is irrelevant, and validation is silent. The write
+simply does not appear in the texture.
+
+The one asymmetry I noticed but did not chase is that some textures come out
+with `usage=0x0` despite a full `gpu_usage` mask, and that the failing set
+carries `MTLTextureUsagePixelFormatView` alongside `ShaderWrite` — a
+combination that constrains what the driver may do with a texture. Whether
+either matters here I do not know.
+
+I would value a pointer on where to look next, and I am happy to keep running
+experiments on this hardware.
 
 **I have a Metal frame capture of the failing frame**
 

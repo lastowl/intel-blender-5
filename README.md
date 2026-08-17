@@ -528,14 +528,31 @@ Also excluded: the texture pool (`--debug-gpu-no-texture-pool` changes
 nothing), and image slot collision (render buffers occupy slots 0–1, radiance
 2–7).
 
-That leaves the difference between how `direct_radiance_txs_` are allocated —
-`TextureFromPool::acquire_2d(..., usage_read | usage_write)` inside
-`DeferredLayer::render()` — and the raytracing-owned
-`indirect_result_.closures[]` that accept writes fine. Not yet identified.
+Nor is it the texture descriptors. Instrumenting `newTextureWithDescriptor:`
+in `mtl_texture.mm` and dumping every allocation:
 
-Remaining avenues: open the trace in Xcode's Metal debugger and inspect the
-`Eval.Light` draw's bound image descriptors (usage flags in particular), or
-diff how the two texture sets reach the Metal backend.
+```
+fmt=53 (R32Uint,      direct_radiance)  usage=0x17  storage=2
+fmt=92 (RG11B10Float, raytrace)         usage=0x17  storage=2
+```
+
+`0x17` is `ShaderRead | ShaderWrite | RenderTarget | PixelFormatView`. The
+failing textures **do** carry `MTLTextureUsageShaderWrite`, with the same
+storage mode as the working ones. The descriptors are correct.
+
+**That exhausts the headless avenues.** Everything reachable from the CPU side
+checks out: the shader runs, the descriptors are right, the bindings do not
+collide, the format is irrelevant, and both Metal validation layers are
+silent. The write simply never appears in the texture.
+
+Unchased asymmetries, noted for whoever picks this up: some textures emerge
+with `usage=0x0` despite a full `gpu_usage` mask, and the failing set carries
+`MTLTextureUsagePixelFormatView` alongside `ShaderWrite`, a combination that
+constrains what the driver may do with a texture.
+
+Next step is the Xcode Metal debugger on
+`logs/eevee-amd-black-lighting.gputrace` — inspect the `Eval.Light` draw and
+watch whether the write retires. That is interactive GUI work.
 
 ### Workaround available today
 
