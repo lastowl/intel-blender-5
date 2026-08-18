@@ -304,6 +304,8 @@ scripts/sign-app.sh           codesign the bundle (skips with no identity)
 scripts/package-dmg.sh        wrap Blender.app into a .dmg, sign if configured
 scripts/notarize-dmg.sh       notarize + staple (skips with no credentials)
 scripts/setup-signing-secrets.sh  configure the CI signing secrets (opt-in)
+docs/session-state.md         resumable snapshot: what works, what is left
+docs/cycles-amd-revert-analysis.md  why Cycles GPU on AMD is not reachable
 patches/                      patch series, regenerated from the blender repo
 logs/                         build logs
 blender/                      Blender source checkout (branch: intel-x64-<ver>)
