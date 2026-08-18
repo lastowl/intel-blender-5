@@ -611,12 +611,19 @@ value Blender would have.
 
 * ~~EEVEE lighting renders black on AMD Metal.~~ **Fixed** by patch `0009` —
   see the GPU section. EEVEE now renders correctly on the Radeon Pro 5500M.
-* Cycles GPU is unavailable by upstream design: `get_usable_devices()` rejects
-  any device whose name contains "AMD" or "Intel", so `METAL: []` and rendering
-  falls back to CPU. Not a defect in this build.
-* The Cycles AMD/Intel revert (12 files, 22 conflict blocks) — deferred behind
-  the EEVEE diagnosis, which is cheaper and informs whether the revert is even
-  worth attempting.
+* **Cycles GPU is not reachable without substantial work, and this has now
+  been measured rather than assumed.** Opening the two-line vendor filter in
+  `util.mm` is enough for Cycles to accept the Radeon Pro 5500M and compile
+  every kernel — but the render completes in 5 h 10 m and produces an
+  *entirely empty film* (RGBA 0,0,0,0 across the frame). Kernel caching is
+  also disabled for non-Apple vendors, so that cost repeats on every render.
+  The full revert is not viable either: of the 12 conflicted files, several
+  cannot be resolved toward the old code because it depended on structures the
+  last two years removed. See `docs/cycles-amd-revert-analysis.md`.
+
+  For scale: the EEVEE fix that made the viewport usable is four lines.
+  Restoring Cycles means re-implementing discrete-GPU support across the
+  backend.
 * Nothing is code-signed. `package-dmg.sh` produces an unsigned image and
   documents `xattr -cr` as the workaround.
 * ~~CI has never run the Blender job.~~ **Done** — run 8 completed green in
